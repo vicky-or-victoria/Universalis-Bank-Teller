@@ -4,8 +4,10 @@ from discord.ext import commands
 import json
 import os
 import random
+import asyncio
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
+from datetime import datetime, timedelta
 
 SETTINGS_FILE = "settings.json"
 
@@ -112,169 +114,94 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-class AddItemModal(ui.Modal, title="Add Item/Service"):
-    item_name = ui.TextInput(
-        label="Item/Service Name",
-        placeholder="e.g., Premium Widget, Consulting Service",
-        required=True,
-        max_length=100
-    )
-    
-    item_price = ui.TextInput(
-        label="Price per Unit ($)",
-        placeholder="e.g., 25.99",
-        required=True,
-        max_length=20
-    )
-    
-    def __init__(self, calculator_view: 'CalculatorView'):
-        super().__init__()
-        self.calculator_view = calculator_view
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            price = float(self.item_price.value.replace(',', '').replace('$', ''))
-            if price <= 0:
-                await interaction.response.send_message(
-                    "*\"Oh dear, the price needs to be a positive number!\"*",
-                    ephemeral=True
-                )
-                return
-        except ValueError:
-            await interaction.response.send_message(
-                "*\"Hmm, that doesn't look like a valid price. Please enter a number like 25.99\"*",
-                ephemeral=True
-            )
-            return
-        
-        self.calculator_view.pending_item = {
-            "name": self.item_name.value,
-            "price": price,
-            "dice": None,
-            "quantity": None,
-            "roll": None
-        }
-        
-        await interaction.response.edit_message(
-            embed=self.calculator_view.create_dice_selection_embed(),
-            view=self.calculator_view
-        )
-
-class AddExpenseModal(ui.Modal, title="Add Business Expenses"):
-    expense_amount = ui.TextInput(
-        label="Total Expenses ($)",
-        placeholder="e.g., 5000.00",
-        required=True,
-        max_length=20
-    )
-    
-    def __init__(self, calculator_view: 'CalculatorView'):
-        super().__init__()
-        self.calculator_view = calculator_view
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            amount = float(self.expense_amount.value.replace(',', '').replace('$', ''))
-            if amount < 0:
-                await interaction.response.send_message(
-                    "*\"Expenses can't be negative, dear!\"*",
-                    ephemeral=True
-                )
-                return
-        except ValueError:
-            await interaction.response.send_message(
-                "*\"That doesn't look like a valid amount. Please enter a number like 5000.00\"*",
-                ephemeral=True
-            )
-            return
-        
-        self.calculator_view.expenses = amount
-        await interaction.response.edit_message(
-            embed=self.calculator_view.create_main_embed(),
-            view=self.calculator_view
-        )
-
-class DiceSelect(ui.Select):
-    def __init__(self, calculator_view: 'CalculatorView'):
-        self.calculator_view = calculator_view
-        options = [
-            discord.SelectOption(label=f"d{dice}", value=str(dice), description=f"Roll 1-{dice} units sold")
-            for dice in DICE_OPTIONS
-        ]
-        super().__init__(
-            placeholder="Select dice type for quantity...",
-            options=options,
-            row=0
-        )
-    
-    async def callback(self, interaction: discord.Interaction):
-        if not self.calculator_view.pending_item:
-            await interaction.response.send_message(
-                "*\"Please add an item first before selecting a dice type!\"*",
-                ephemeral=True
-            )
-            return
-        
-        dice = int(self.values[0])
-        roll = roll_dice(dice)
-        
-        self.calculator_view.pending_item["dice"] = dice
-        self.calculator_view.pending_item["quantity"] = roll
-        self.calculator_view.pending_item["roll"] = roll
-        
-        self.calculator_view.items.append(self.calculator_view.pending_item)
-        self.calculator_view.pending_item = None
-        
-        self.calculator_view.remove_item(self)
-        self.calculator_view.dice_select = None
-        
-        await interaction.response.edit_message(
-            embed=self.calculator_view.create_main_embed(),
-            view=self.calculator_view
-        )
-
-class CalculatorView(ui.View):
-    def __init__(self, user: discord.User):
-        super().__init__(timeout=300)
-        self.user = user
+class CalculatorSession:
+    def __init__(self, user_id: int, channel_id: int, interaction: discord.Interaction):
+        self.user_id = user_id
+        self.channel_id = channel_id
+        self.interaction = interaction
         self.include_ceo_salary = True
+        self.ceo_salary_multiplier = 100
         self.items: List[dict] = []
         self.expenses: float = 0.0
+        self.input_state: Optional[str] = None
         self.pending_item: Optional[dict] = None
-        self.dice_select = None
-        
-    def create_main_embed(self) -> discord.Embed:
+        self.dialogue = "*The bank teller greets you with a warm smile...*\n\n*\"Welcome! Let's calculate your business finances. Use the buttons below to build your financial report!\"*"
+        self.created_at = datetime.utcnow()
+        self.timeout_minutes = 10
+    
+    def is_expired(self) -> bool:
+        return datetime.utcnow() > self.created_at + timedelta(minutes=self.timeout_minutes)
+
+class SessionManager:
+    def __init__(self):
+        self.sessions: Dict[int, CalculatorSession] = {}
+    
+    def create_session(self, user_id: int, channel_id: int, interaction: discord.Interaction) -> CalculatorSession:
+        session = CalculatorSession(user_id, channel_id, interaction)
+        self.sessions[user_id] = session
+        return session
+    
+    def get_session(self, user_id: int) -> Optional[CalculatorSession]:
+        session = self.sessions.get(user_id)
+        if session and session.is_expired():
+            self.remove_session(user_id)
+            return None
+        return session
+    
+    def remove_session(self, user_id: int):
+        if user_id in self.sessions:
+            del self.sessions[user_id]
+    
+    def get_session_by_channel(self, user_id: int, channel_id: int) -> Optional[CalculatorSession]:
+        session = self.get_session(user_id)
+        if session and session.channel_id == channel_id:
+            return session
+        return None
+
+session_manager = SessionManager()
+
+class CalculatorView(ui.View):
+    def __init__(self, session: CalculatorSession):
+        super().__init__(timeout=600)
+        self.session = session
+    
+    def create_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title="Universalis Bank - Financial Calculator",
-            description="*The bank teller greets you with a warm smile...*\n\n*\"Welcome! Let's calculate your business finances. Add your items sold below, and I'll handle all the tax calculations for you!\"*",
+            description=self.session.dialogue,
             color=discord.Color.from_rgb(0, 123, 255)
         )
         
-        ceo_status = "Yes" if self.include_ceo_salary else "No"
+        if self.session.include_ceo_salary:
+            ceo_base = settings["ceo_salary_percent"]
+            effective_ceo = ceo_base * (self.session.ceo_salary_multiplier / 100)
+            ceo_status = f"Yes ({self.session.ceo_salary_multiplier}% of {ceo_base}% = {effective_ceo:.1f}%)"
+        else:
+            ceo_status = "No"
+        
         embed.add_field(
-            name="CEO Salary Included",
+            name="CEO Salary",
             value=f"```{ceo_status}```",
             inline=True
         )
         
         embed.add_field(
             name="Business Expenses",
-            value=f"```{format_money(self.expenses)}```",
+            value=f"```{format_money(self.session.expenses)}```",
             inline=True
         )
         
-        if self.items:
+        if self.session.items:
             items_text = ""
             total_revenue = 0.0
-            for item in self.items:
+            for item in self.session.items:
                 revenue = item["price"] * item["quantity"]
                 total_revenue += revenue
                 items_text += f"**{item['name']}**\n"
-                items_text += f"  Price: {format_money(item['price'])} × {item['quantity']} (d{item['dice']} roll)\n"
-                items_text += f"  Revenue: {format_money(revenue)}\n\n"
+                items_text += f"  {format_money(item['price'])} × {item['quantity']} (d{item['dice']}) = {format_money(revenue)}\n"
             
             embed.add_field(
-                name=f"Items/Services ({len(self.items)})",
+                name=f"Items/Services ({len(self.session.items)})",
                 value=items_text,
                 inline=False
             )
@@ -291,42 +218,26 @@ class CalculatorView(ui.View):
                 inline=False
             )
         
-        embed.set_footer(text="Add items, set expenses, then click Calculate when ready!")
-        return embed
-    
-    def create_dice_selection_embed(self) -> discord.Embed:
-        if not self.pending_item:
-            return self.create_main_embed()
+        if self.session.input_state:
+            state_messages = {
+                "awaiting_item_name": "Type the **item/service name** in the chat below:",
+                "awaiting_item_price": f"Now type the **price** for **{self.session.pending_item['name'] if self.session.pending_item else 'item'}**:",
+                "awaiting_dice": f"Type the **dice type** (10, 12, 20, 25, 50, or 100) for **{self.session.pending_item['name'] if self.session.pending_item else 'item'}**:",
+                "awaiting_expenses": "Type your **total business expenses** in the chat below:",
+                "awaiting_ceo_percent": "Type the **percentage of CEO salary** you want to take (1-100):"
+            }
+            prompt = state_messages.get(self.session.input_state, "Waiting for input...")
+            embed.add_field(
+                name="Awaiting Your Input",
+                value=f"```\n{prompt}\n```\n*Type your response in this channel and I'll read it!*",
+                inline=False
+            )
         
-        embed = discord.Embed(
-            title="Universalis Bank - Roll for Quantity",
-            description=f"*The bank teller prepares the dice...*\n\n*\"Now, let's see how many **{self.pending_item['name']}** units you sold! Choose a dice type below and I'll roll it for you.\"*",
-            color=discord.Color.from_rgb(255, 193, 7)
-        )
-        
-        embed.add_field(
-            name="Item Details",
-            value=f"```\nItem: {self.pending_item['name']}\nPrice: {format_money(self.pending_item['price'])}\n```",
-            inline=False
-        )
-        
-        dice_info = "\n".join([f"**d{d}**: Roll 1-{d} units" for d in DICE_OPTIONS])
-        embed.add_field(
-            name="Available Dice",
-            value=dice_info,
-            inline=False
-        )
-        
-        embed.set_footer(text="Select a dice type from the dropdown below!")
-        
-        if self.dice_select is None:
-            self.dice_select = DiceSelect(self)
-            self.add_item(self.dice_select)
-        
+        embed.set_footer(text="Your messages will be automatically deleted after I read them!")
         return embed
     
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user.id:
+        if interaction.user.id != self.session.user_id:
             await interaction.response.send_message(
                 "*\"I'm sorry, but this calculator session belongs to someone else!\"*",
                 ephemeral=True
@@ -334,56 +245,114 @@ class CalculatorView(ui.View):
             return False
         return True
     
-    @ui.button(label="Toggle CEO Salary", style=discord.ButtonStyle.secondary, emoji="👔", row=1)
+    async def update_embed(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.edit_message(embed=self.create_embed(), view=self)
+        except discord.errors.InteractionResponded:
+            await interaction.edit_original_response(embed=self.create_embed(), view=self)
+    
+    @ui.button(label="Toggle CEO Salary", style=discord.ButtonStyle.secondary, emoji="👔", row=0)
     async def toggle_ceo(self, interaction: discord.Interaction, button: ui.Button):
-        self.include_ceo_salary = not self.include_ceo_salary
-        await interaction.response.edit_message(embed=self.create_main_embed(), view=self)
+        if self.session.input_state:
+            self.session.dialogue = "*\"Please finish your current input first, dear!\"*"
+            await self.update_embed(interaction)
+            return
+        
+        self.session.include_ceo_salary = not self.session.include_ceo_salary
+        if self.session.include_ceo_salary:
+            self.session.dialogue = "*The bank teller nods approvingly...*\n\n*\"CEO salary is now enabled! Would you like to adjust the percentage?\"*"
+        else:
+            self.session.dialogue = "*The bank teller makes a note...*\n\n*\"Understood! No CEO salary will be calculated this time.\"*"
+        await self.update_embed(interaction)
+    
+    @ui.button(label="Set CEO %", style=discord.ButtonStyle.secondary, emoji="💼", row=0)
+    async def set_ceo_percent(self, interaction: discord.Interaction, button: ui.Button):
+        if self.session.input_state:
+            self.session.dialogue = "*\"Please finish your current input first, dear!\"*"
+            await self.update_embed(interaction)
+            return
+        
+        if not self.session.include_ceo_salary:
+            self.session.dialogue = "*\"CEO salary is currently disabled. Enable it first with the toggle button!\"*"
+            await self.update_embed(interaction)
+            return
+        
+        self.session.input_state = "awaiting_ceo_percent"
+        self.session.dialogue = f"*The bank teller pulls out a form...*\n\n*\"The maximum CEO salary is {settings['ceo_salary_percent']}% of post-tax profit. What percentage of this would you like to take? Type a number from 1 to 100.\"*"
+        await self.update_embed(interaction)
     
     @ui.button(label="Add Item", style=discord.ButtonStyle.primary, emoji="📦", row=1)
     async def add_item(self, interaction: discord.Interaction, button: ui.Button):
-        if len(self.items) >= 10:
-            await interaction.response.send_message(
-                "*\"Oh my, that's quite a lot! We can only handle up to 10 items at a time.\"*",
-                ephemeral=True
-            )
+        if self.session.input_state:
+            self.session.dialogue = "*\"Please finish your current input first, dear!\"*"
+            await self.update_embed(interaction)
             return
-        modal = AddItemModal(self)
-        await interaction.response.send_modal(modal)
+        
+        if len(self.session.items) >= 10:
+            self.session.dialogue = "*\"Oh my, that's quite a lot! We can only handle up to 10 items at a time.\"*"
+            await self.update_embed(interaction)
+            return
+        
+        self.session.input_state = "awaiting_item_name"
+        self.session.pending_item = {}
+        self.session.dialogue = "*The bank teller prepares her ledger...*\n\n*\"What item or service did you sell? Type the name in the chat below!\"*"
+        await self.update_embed(interaction)
     
     @ui.button(label="Set Expenses", style=discord.ButtonStyle.secondary, emoji="💸", row=1)
     async def set_expenses(self, interaction: discord.Interaction, button: ui.Button):
-        modal = AddExpenseModal(self)
-        await interaction.response.send_modal(modal)
+        if self.session.input_state:
+            self.session.dialogue = "*\"Please finish your current input first, dear!\"*"
+            await self.update_embed(interaction)
+            return
+        
+        self.session.input_state = "awaiting_expenses"
+        self.session.dialogue = "*The bank teller looks up from her desk...*\n\n*\"What were your total business expenses? Type the amount in the chat below!\"*"
+        await self.update_embed(interaction)
     
     @ui.button(label="Clear All", style=discord.ButtonStyle.danger, emoji="🗑️", row=2)
     async def clear_all(self, interaction: discord.Interaction, button: ui.Button):
-        self.items = []
-        self.expenses = 0.0
-        self.include_ceo_salary = True
-        self.pending_item = None
-        if self.dice_select:
-            self.remove_item(self.dice_select)
-            self.dice_select = None
-        await interaction.response.edit_message(embed=self.create_main_embed(), view=self)
+        self.session.items = []
+        self.session.expenses = 0.0
+        self.session.include_ceo_salary = True
+        self.session.ceo_salary_multiplier = 100
+        self.session.pending_item = None
+        self.session.input_state = None
+        self.session.dialogue = "*The bank teller clears her ledger...*\n\n*\"All cleared! Let's start fresh. What would you like to do?\"*"
+        await self.update_embed(interaction)
+    
+    @ui.button(label="Cancel Input", style=discord.ButtonStyle.secondary, emoji="❌", row=2)
+    async def cancel_input(self, interaction: discord.Interaction, button: ui.Button):
+        if self.session.input_state:
+            self.session.input_state = None
+            self.session.pending_item = None
+            self.session.dialogue = "*The bank teller nods understandingly...*\n\n*\"No problem! Input cancelled. What would you like to do next?\"*"
+        else:
+            self.session.dialogue = "*\"There's nothing to cancel right now, dear!\"*"
+        await self.update_embed(interaction)
     
     @ui.button(label="Calculate", style=discord.ButtonStyle.success, emoji="🧮", row=2)
     async def calculate(self, interaction: discord.Interaction, button: ui.Button):
-        if not self.items:
-            await interaction.response.send_message(
-                "*\"Oh dear, you haven't added any items yet! Please add at least one item or service first.\"*",
-                ephemeral=True
-            )
+        if self.session.input_state:
+            self.session.dialogue = "*\"Please finish your current input first, dear!\"*"
+            await self.update_embed(interaction)
             return
         
-        gross_profit = sum(item["price"] * item["quantity"] for item in self.items)
+        if not self.session.items:
+            self.session.dialogue = "*\"Oh dear, you haven't added any items yet! Please add at least one item or service first.\"*"
+            await self.update_embed(interaction)
+            return
         
-        result_embed = await self.generate_financial_report(gross_profit, self.expenses)
+        gross_profit = sum(item["price"] * item["quantity"] for item in self.session.items)
         
+        result_embed = await self.generate_financial_report(gross_profit, self.session.expenses)
+        
+        session_manager.remove_session(self.session.user_id)
         self.stop()
         await interaction.response.edit_message(embed=result_embed, view=None)
     
     async def generate_financial_report(self, gross_profit: float, gross_expenses: float) -> discord.Embed:
-        ceo_rate = settings["ceo_salary_percent"] if self.include_ceo_salary else 0
+        ceo_base_rate = settings["ceo_salary_percent"]
+        effective_ceo_rate = ceo_base_rate * (self.session.ceo_salary_multiplier / 100) if self.session.include_ceo_salary else 0
         business_brackets = settings["tax_brackets"]
         ceo_brackets = settings["ceo_tax_brackets"]
         
@@ -397,7 +366,7 @@ class CalculatorView(ui.View):
             )
             
             sales_text = ""
-            for item in self.items:
+            for item in self.session.items:
                 revenue = item["price"] * item["quantity"]
                 sales_text += f"{item['name']}: {item['quantity']} sold @ {format_money(item['price'])} = {format_money(revenue)}\n"
             
@@ -430,8 +399,8 @@ class CalculatorView(ui.View):
         business_tax, business_breakdown = calculate_progressive_tax(net_profit, business_brackets)
         profit_after_tax = net_profit - business_tax
         
-        if self.include_ceo_salary:
-            gross_ceo_salary = profit_after_tax * (ceo_rate / 100)
+        if self.session.include_ceo_salary:
+            gross_ceo_salary = profit_after_tax * (effective_ceo_rate / 100)
             ceo_tax, ceo_breakdown = calculate_progressive_tax(gross_ceo_salary, ceo_brackets)
             net_ceo_salary = gross_ceo_salary - ceo_tax
             final_profit = profit_after_tax - gross_ceo_salary
@@ -452,7 +421,7 @@ class CalculatorView(ui.View):
         )
         
         sales_text = ""
-        for item in self.items:
+        for item in self.session.items:
             revenue = item["price"] * item["quantity"]
             sales_text += f"🎲 {item['name']}\n"
             sales_text += f"   d{item['dice']} → {item['quantity']} units @ {format_money(item['price'])} = {format_money(revenue)}\n"
@@ -501,9 +470,9 @@ class CalculatorView(ui.View):
             inline=False
         )
         
-        if self.include_ceo_salary:
+        if self.session.include_ceo_salary:
             embed.add_field(
-                name=f"CEO Compensation ({ceo_rate}% of post-tax profit)",
+                name=f"CEO Compensation ({self.session.ceo_salary_multiplier}% of {ceo_base_rate}% = {effective_ceo_rate:.1f}%)",
                 value=(
                     f"```\n"
                     f"Gross CEO Salary: {format_money(gross_ceo_salary):>14}\n"
@@ -602,11 +571,109 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+    
+    session = session_manager.get_session_by_channel(message.author.id, message.channel.id)
+    
+    if not session or not session.input_state:
+        return
+    
+    content = message.content.strip()
+    
+    try:
+        await message.delete()
+    except discord.errors.Forbidden:
+        pass
+    except discord.errors.NotFound:
+        pass
+    
+    view = CalculatorView(session)
+    
+    if session.input_state == "awaiting_item_name":
+        if len(content) > 100:
+            session.dialogue = "*\"That name is a bit too long, dear. Please keep it under 100 characters!\"*"
+        elif len(content) == 0:
+            session.dialogue = "*\"I didn't catch that. Please type a name for your item or service!\"*"
+        else:
+            session.pending_item = {"name": content}
+            session.input_state = "awaiting_item_price"
+            session.dialogue = f"*The bank teller writes down \"{content}\"...*\n\n*\"Great! Now, what's the price per unit for this item?\"*"
+    
+    elif session.input_state == "awaiting_item_price":
+        try:
+            price = float(content.replace(',', '').replace('$', ''))
+            if price <= 0:
+                session.dialogue = "*\"The price needs to be a positive number, dear!\"*"
+            else:
+                session.pending_item["price"] = price
+                session.input_state = "awaiting_dice"
+                session.dialogue = f"*The bank teller notes the price of {format_money(price)}...*\n\n*\"Now, which dice shall we roll to determine how many units were sold? Type 10, 12, 20, 25, 50, or 100!\"*"
+        except ValueError:
+            session.dialogue = "*\"That doesn't look like a valid price. Please enter a number like 25.99!\"*"
+    
+    elif session.input_state == "awaiting_dice":
+        try:
+            dice = int(content.replace('d', '').replace('D', ''))
+            if dice not in DICE_OPTIONS:
+                session.dialogue = f"*\"I only have d10, d12, d20, d25, d50, and d100 dice available. Please choose one of those!\"*"
+            else:
+                roll_result = roll_dice(dice)
+                session.pending_item["dice"] = dice
+                session.pending_item["quantity"] = roll_result
+                session.items.append(session.pending_item)
+                session.pending_item = None
+                session.input_state = None
+                item_name = session.items[-1]["name"]
+                session.dialogue = f"*The bank teller rolls the d{dice}...*\n\n🎲 **Rolled a {roll_result}!**\n\n*\"{item_name} sold {roll_result} units! I've added it to your ledger. Anything else?\"*"
+        except ValueError:
+            session.dialogue = "*\"Please enter a valid dice number: 10, 12, 20, 25, 50, or 100!\"*"
+    
+    elif session.input_state == "awaiting_expenses":
+        try:
+            amount = float(content.replace(',', '').replace('$', ''))
+            if amount < 0:
+                session.dialogue = "*\"Expenses can't be negative, dear!\"*"
+            else:
+                session.expenses = amount
+                session.input_state = None
+                session.dialogue = f"*The bank teller records the expenses...*\n\n*\"Got it! Business expenses set to {format_money(amount)}. What's next?\"*"
+        except ValueError:
+            session.dialogue = "*\"That doesn't look like a valid amount. Please enter a number like 5000.00!\"*"
+    
+    elif session.input_state == "awaiting_ceo_percent":
+        try:
+            percent = int(content.replace('%', ''))
+            if percent < 1 or percent > 100:
+                session.dialogue = "*\"Please enter a percentage between 1 and 100!\"*"
+            else:
+                session.ceo_salary_multiplier = percent
+                session.input_state = None
+                effective = settings["ceo_salary_percent"] * (percent / 100)
+                session.dialogue = f"*The bank teller updates the compensation form...*\n\n*\"Perfect! You'll take {percent}% of the allowed {settings['ceo_salary_percent']}% CEO salary, which is {effective:.1f}% of post-tax profit.\"*"
+        except ValueError:
+            session.dialogue = "*\"Please enter a valid percentage number between 1 and 100!\"*"
+    
+    try:
+        await session.interaction.edit_original_response(embed=view.create_embed(), view=view)
+    except discord.errors.NotFound:
+        session_manager.remove_session(session.user_id)
+    except Exception as e:
+        print(f"Error updating session: {e}")
+
 @bot.tree.command(name="calculate", description="Open the interactive financial calculator")
 async def calculate(interaction: discord.Interaction):
-    view = CalculatorView(interaction.user)
+    existing_session = session_manager.get_session(interaction.user.id)
+    if existing_session:
+        session_manager.remove_session(interaction.user.id)
+    
+    session = session_manager.create_session(interaction.user.id, interaction.channel.id, interaction)
+    view = CalculatorView(session)
+    
     await interaction.response.send_message(
-        embed=view.create_main_embed(),
+        embed=view.create_embed(),
         view=view,
         ephemeral=True
     )
@@ -649,7 +716,7 @@ async def view_rates(interaction: discord.Interaction):
     
     embed.add_field(
         name="CEO Salary Rate",
-        value=f"```\n{ceo_rate}% of post-tax business profit\n```",
+        value=f"```\n{ceo_rate}% of post-tax business profit (adjustable per calculation)\n```",
         inline=False
     )
     
@@ -1023,13 +1090,14 @@ async def help_finance(interaction: discord.Interaction):
         name="How to Use /calculate",
         value=(
             "1. Run `/calculate` to open your private calculator\n"
-            "2. Click **Add Item** to add products/services sold\n"
-            "3. Enter item name and price per unit\n"
-            "4. Select a dice type (d10, d12, d20, d25, d50, d100)\n"
-            "5. The dice roll determines how many units sold!\n"
-            "6. Toggle **CEO Salary** on/off as needed\n"
+            "2. Click **Add Item** and type item name in chat\n"
+            "3. Type the price when prompted\n"
+            "4. Type dice type (10, 12, 20, 25, 50, or 100)\n"
+            "5. The dice rolls and determines quantity sold!\n"
+            "6. Toggle **CEO Salary** and set percentage\n"
             "7. Set your **Business Expenses**\n"
-            "8. Click **Calculate** for your financial report"
+            "8. Click **Calculate** for your financial report\n\n"
+            "*Your chat messages are automatically deleted!*"
         ),
         inline=False
     )
@@ -1048,7 +1116,7 @@ async def help_finance(interaction: discord.Interaction):
         value=(
             "**`/set_ceo_bracket`** - Add/update a CEO income tax bracket\n"
             "**`/remove_ceo_bracket`** - Remove a CEO income tax bracket\n"
-            "**`/set_ceo_salary`** - Set CEO salary percentage"
+            "**`/set_ceo_salary`** - Set maximum CEO salary percentage"
         ),
         inline=False
     )
@@ -1062,7 +1130,7 @@ async def help_finance(interaction: discord.Interaction):
             "3. Total Revenue = Sum of (price × quantity)\n"
             "4. Net Profit = Revenue - Expenses\n"
             "5. Business Tax (progressive brackets)\n"
-            "6. CEO Salary = % of post-tax profit\n"
+            "6. CEO Salary = Your % of allowed rate\n"
             "7. CEO Tax (progressive brackets)\n"
             "8. Final totals calculated\n"
             "```"
