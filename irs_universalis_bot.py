@@ -160,7 +160,7 @@ session_manager = SessionManager()
 class AddItemModal(ui.Modal, title="Add Item/Service"):
     item_name = ui.TextInput(
         label="Item/Service Name",
-        placeholder="e.g., Sword, Potion, Repair Service",
+        placeholder="e.g., Apple, Cola, Repair Service",
         max_length=100,
         required=True
     )
