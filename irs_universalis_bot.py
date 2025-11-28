@@ -345,10 +345,13 @@ class CalculatorView(ui.View):
         gross_profit = sum(item["price"] * item["quantity"] for item in self.session.items)
         
         result_embed = await self.generate_financial_report(gross_profit, self.session.expenses)
+        result_embed.set_footer(text=f"Report generated for {interaction.user.display_name} | Universalis Bank | Here to help your business thrive")
         
         session_manager.remove_session(self.session.user_id)
         self.stop()
-        await interaction.response.edit_message(embed=result_embed, view=None)
+        
+        await interaction.response.defer()
+        await interaction.channel.send(embed=result_embed)
     
     async def generate_financial_report(self, gross_profit: float, gross_expenses: float) -> discord.Embed:
         ceo_base_rate = settings["ceo_salary_percent"]
