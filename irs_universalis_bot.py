@@ -11,6 +11,7 @@ from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 
 import discord
+discord.opus = None
 from discord import ui, app_commands
 from discord.ext import commands, tasks
 
