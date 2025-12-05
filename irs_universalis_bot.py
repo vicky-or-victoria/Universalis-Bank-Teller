@@ -711,20 +711,19 @@ def format_bracket_range(min_val, max_val):
     return f"${min_val:,.0f} - ${max_val:,.0f}"
 
 
-# Run
-if __name__ == "__main__":
-    token = os.getenv("DISCORD_BOT_TOKEN")
-    if not token:
-        print("Error: DISCORD_BOT_TOKEN not found in environment variables!")
-        raise SystemExit(1)
-    print("Starting Universalis Bank Bot v3.0 (Kirztin)...")
-    bot.run(token)
+# BankSession Class
+class BankSession:
+    def __init__(self, timeout_minutes=10):
+        self.timeout_minutes = timeout_minutes
+        self.last_activity = datetime.utcnow()
+
         self.transfer_data = {
             "source": None,
             "destination": None,
             "amount": None,
             "reason": None
         }
+
         self.loan_data = {
             "player_name": None,
             "amount": None,
@@ -737,6 +736,36 @@ if __name__ == "__main__":
 
     def is_expired(self) -> bool:
         return datetime.utcnow() > self.last_activity + timedelta(minutes=self.timeout_minutes)
+
+
+# ThreadSessionManager Class
+class ThreadSessionManager:
+    def __init__(self):
+        self.sessions: Dict[int, BankSession] = {}
+
+    def create_session(self, thread: discord.Thread, author: discord.Member) -> BankSession:
+        session = BankSession()
+        self.sessions[thread.id] = session
+        return session
+
+    def get_session(self, thread_id: int) -> Optional[BankSession]:
+        session = self.sessions.get(thread_id)
+        if session and session.is_expired():
+            del self.sessions[thread_id]
+            return None
+        return session
+
+
+# Run Bot
+if __name__ == "__main__":
+    token = os.getenv("DISCORD_BOT_TOKEN")
+
+    if not token:
+        print("Error: DISCORD_BOT_TOKEN not found in environment variables!")
+        raise SystemExit(1)
+
+    print("Starting Universalis Bank Bot v3.0 (Kirztin)...")
+    bot.run(token)
 
 class ThreadSessionManager:
     def __init__(self):
