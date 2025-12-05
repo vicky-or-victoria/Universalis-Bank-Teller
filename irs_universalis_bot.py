@@ -396,7 +396,7 @@ class CalculatorView(ui.View):
                 inline=False
             )
             embed.add_field(name="Assessment",
-                            value="*\"Oh dear, it looks like your expenses exceeded your earnings this period. Don't worry though - no taxes or salary deductions apply when there's no profit. Let me know if you need any help planning for next quarter!\"*",
+                            value="*\"Oh dear, it looks like your expenses exceeded your earnings this period. Don't worry though - no taxes or salary deductions apply when there's no profit. Let me know if you need any help planning for next quarter!\"*"),
        return e
 
 def generate_loan_notice_embed(loan: dict, requester: discord.Member) -> discord.Embed:
