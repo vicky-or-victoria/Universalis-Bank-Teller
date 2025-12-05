@@ -1,17 +1,41 @@
-# irs_universalis_bot.py (v3.0) - Thread-based Kirztin AI Teller + existing calculator features
-import discord
-from discord import app_commands, ui
-from discord.ext import commands, tasks
-import json
+# irs_universalis_bot.py (v3.0) - Kirztin, thread-based OpenAI-powered bank teller
+
 import os
-import random
+import json
 import re
-from pathlib import Path
-from typing import Optional, List, Dict
+import random
+import asyncio
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional, Dict
 
+import discord
+from discord.ext import commands, tasks
+import openai
+
+
+# Configuration & settings
+OPENAI_KEY = os.getenv("OPENAI_KEY")
+ROLE_ID_SECRET = os.getenv("ROLE_ID")
+FORUM_ID_SECRET = os.getenv("FORUM_ID")
+
+if not OPENAI_KEY:
+    raise RuntimeError("OPENAI_KEY environment variable is required.")
+if not ROLE_ID_SECRET:
+    raise RuntimeError("ROLE_ID environment variable is required.")
+if not FORUM_ID_SECRET:
+    raise RuntimeError("FORUM_ID environment variable is required.")
+
+try:
+    BANK_MANAGER_ROLE_ID = int(ROLE_ID_SECRET)
+    WATCH_FORUM_ID = int(FORUM_ID_SECRET)
+except ValueError:
+    raise RuntimeError("ROLE_ID and FORUM_ID must be numeric IDs (strings that parse to int).")
+
+openai.api_key = OPENAI_KEY
+
+# Basic settings and defaults (from your prior implementation)
 SETTINGS_FILE = "settings.json"
-
 DEFAULT_SETTINGS = {
     "tax_brackets": [
         {"min": 0, "max": 50000, "rate": 10.0},
@@ -28,116 +52,673 @@ DEFAULT_SETTINGS = {
     ]
 }
 
-# Kirztin + Bank Manager Role ID (user provided)
-TELLER_NAME = "Kirztin"
-BANK_MANAGER_ROLE_ID = 1382117937267347466  # provided by user
-
 DICE_OPTIONS = [10, 12, 20, 25, 50, 100]
+TELLER_NAME = "Kirztin"
 
+
+# Load/save settings
 def load_settings():
     if Path(SETTINGS_FILE).exists():
         try:
             with open(SETTINGS_FILE, "r") as f:
                 data = json.load(f)
-                if "tax_brackets" not in data:
-                    data["tax_brackets"] = DEFAULT_SETTINGS["tax_brackets"]
-                if "ceo_tax_brackets" not in data:
-                    data["ceo_tax_brackets"] = DEFAULT_SETTINGS["ceo_tax_brackets"]
-                if "ceo_salary_percent" not in data:
-                    data["ceo_salary_percent"] = DEFAULT_SETTINGS["ceo_salary_percent"]
-                return data
-        except (json.JSONDecodeError, IOError):
-            print("Warning: Could not read settings file. Using defaults.")
+            # ensure keys exist
+            data.setdefault("tax_brackets", DEFAULT_SETTINGS["tax_brackets"])
+            data.setdefault("ceo_salary_percent", DEFAULT_SETTINGS["ceo_salary_percent"])
+            data.setdefault("ceo_tax_brackets", DEFAULT_SETTINGS["ceo_tax_brackets"])
+            return data
+        except Exception:
             return DEFAULT_SETTINGS.copy()
     return DEFAULT_SETTINGS.copy()
 
-def save_settings(settings):
+def save_settings(s):
     with open(SETTINGS_FILE, "w") as f:
-        json.dump(settings, f, indent=2)
+        json.dump(s, f, indent=2)
 
 settings = load_settings()
 
-def is_admin(interaction: discord.Interaction) -> bool:
-    if not interaction.guild:
-        return False
-    if isinstance(interaction.user, discord.Member):
-        return interaction.user.guild_permissions.administrator
-    return False
 
-def calculate_progressive_tax(amount: float, brackets: list) -> tuple:
-    if amount <= 0:
-        return 0.0, []
-    
-    total_tax = 0.0
-    breakdown = []
-    
-    sorted_brackets = sorted(brackets, key=lambda x: x["min"])
-    
-    for bracket in sorted_brackets:
-        bracket_min = bracket["min"]
-        bracket_max = bracket["max"] if bracket["max"] is not None else float('inf')
-        rate = bracket["rate"]
-        
-        if amount <= bracket_min:
-            continue
-        
-        if bracket_max == float('inf'):
-            taxable_in_bracket = max(0, amount - bracket_min)
-        else:
-            upper = min(amount, bracket_max)
-            taxable_in_bracket = max(0, upper - bracket_min)
-        
-        if taxable_in_bracket > 0:
-            tax_for_bracket = taxable_in_bracket * (rate / 100)
-            total_tax += tax_for_bracket
-            breakdown.append({
-                "min": bracket_min,
-                "max": bracket_max,
-                "rate": rate,
-                "taxable": taxable_in_bracket,
-                "tax": tax_for_bracket
-            })
-    
-    return total_tax, breakdown
-
-def format_bracket_range(min_val: float, max_val) -> str:
-    if max_val is None or max_val == float('inf'):
-        return f"${min_val:,.0f}+"
-    return f"${min_val:,.0f} - ${max_val:,.0f}"
-
+# Utilities
 def format_money(amount: float) -> str:
     return f"${amount:,.2f}"
 
 def create_divider() -> str:
     return "─" * 30
 
+def calculate_progressive_tax(amount: float, brackets: list):
+    if amount <= 0:
+        return 0.0, []
+    total_tax = 0.0
+    breakdown = []
+    sorted_brackets = sorted(brackets, key=lambda x: x["min"])
+    for bracket in sorted_brackets:
+        bmin = bracket["min"]
+        bmax = bracket["max"] if bracket["max"] is not None else float('inf')
+        rate = bracket["rate"]
+        if amount <= bmin:
+            continue
+        if bmax == float('inf'):
+            taxable = max(0, amount - bmin)
+        else:
+            upper = min(amount, bmax)
+            taxable = max(0, upper - bmin)
+        if taxable > 0:
+            tax = taxable * (rate / 100)
+            total_tax += tax
+            breakdown.append({"min": bmin, "max": bmax, "rate": rate, "taxable": taxable, "tax": tax})
+    return total_tax, breakdown
+
 def roll_dice(sides: int) -> int:
     return random.randint(1, sides)
 
 
+# Thread session management
 class ThreadSession:
-    """
-    Manages a conversational session inside a forum thread.
-    Sessions are keyed by thread.id and track a simple state machine.
-    """
-    def __init__(self, thread: discord.Thread, author: discord.Member):
+    def __init__(self, thread: discord.Thread, starter: Optional[discord.Member]):
         self.thread = thread
         self.thread_id = thread.id
-        self.author = author
+        self.starter = starter
         self.created_at = datetime.utcnow()
         self.last_activity = datetime.utcnow()
-        self.timeout_minutes = 30  # session timeout
-        self.state = "AWAITING_CHOICE"  # other states: COMPANY_MENU, TAX_COLLECTING, TRANSFER_COLLECTING, LOAN_COLLECTING, FINISHED
-        self.substate = None  # to track steps within a flow
-        # Data containers
-        self.company_data = {
-            "company_name": None,
-            "player_name": None,
-            "income": None,
-            "expenses": None,
-            "period": None,
-            "modifiers": None
-        }
+        self.timeout_minutes = 30
+        self.state = "AWAITING_CHOICE"  # or COMPANY_TAX, COMPANY_TRANSFER, LOAN, FINISHED
+        self.substate = None
+        # Data
+        self.company = {"company_name": None, "player_name": None, "income": None, "expenses": None, "period": None, "modifiers": None}
+        self.transfer = {"source": None, "destination": None, "amount": None, "reason": None}
+        self.loan = {"player_name": None, "amount": None, "purpose": None, "collateral": None}
+        # keep original messages if needed
+        self.messages = []
+
+    def touch(self):
+        self.last_activity = datetime.utcnow()
+
+    def is_expired(self) -> bool:
+        return datetime.utcnow() > self.last_activity + timedelta(minutes=self.timeout_minutes)
+
+class ThreadSessionManager:
+    def __init__(self):
+        self.sessions: Dict[int, ThreadSession] = {}
+
+    def create(self, thread: discord.Thread, starter: Optional[discord.Member]) -> ThreadSession:
+        s = ThreadSession(thread, starter)
+        self.sessions[thread.id] = s
+        return s
+
+    def get(self, thread_id: int) -> Optional[ThreadSession]:
+        s = self.sessions.get(thread_id)
+        if s and s.is_expired():
+            del self.sessions[thread_id]
+            return None
+        return s
+
+    def remove(self, thread_id: int):
+        if thread_id in self.sessions:
+            del self.sessions[thread_id]
+
+    def cleanup(self):
+        expired = [tid for tid, s in self.sessions.items() if s.is_expired()]
+        for tid in expired:
+            del self.sessions[tid]
+
+thread_manager = ThreadSessionManager()
+
+
+# OpenAI
+async def ask_openai_for_intent(user_message: str) -> dict:
+    """
+    Uses OpenAI to interpret the user's message and return a dict with:
+    {
+      "intent": "tax" | "transfer" | "loan" | "other",
+      "fields": { ... }  # optional parsed details like amount, company_name, source, destination
+    }
+    The assistant is instructed to respond with JSON only.
+    """
+    system_prompt = (
+        "You are a helpful assistant that extracts structured intent from a single user message "
+        "for a banking NPC named Kirztin. Return a JSON object and nothing else, with keys: "
+        "\"intent\" (one of 'tax','transfer','loan','choice','finish','unknown'), "
+        "\"choice\" when the user replies with a simple letter/word choice (A/B/etc), "
+        "and \"fields\" containing any detected structured fields. "
+        "Fields examples: company_name, player_name, income, expenses, period, modifiers, "
+        "source, destination, amount, reason, collateral, purpose. "
+        "Use simple values for amounts (numbers only). If you cannot parse, set intent to 'unknown'."
+    )
+
+    user_prompt = (
+        "User message:\n---\n" + user_message + "\n---\n"
+        "Return JSON only. Example outputs:\n"
+        '{"intent":"tax","fields":{"company_name":"IronWorks","player_name":"Thane","income":12000,"expenses":3000}}\n'
+        '{"intent":"transfer","fields":{"source":"IronWorks","destination":"Thane","amount":2500,"reason":"payout"}}'
+    )
+
+    try:
+        resp = await openai.ChatCompletion.acreate(
+            model="gpt-4o-mini",  # if this model isn't available in your environment, change to a supported model
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=400,
+            temperature=0.0,
+        )
+        text = resp.choices[0].message.content.strip()
+        # Attempt to extract JSON from the response
+        # Some models may include surrounding text — find first and last curly braces
+        json_text = text
+        # if there are code fences, strip them
+        json_text = re.sub(r"^```(?:json)?\n", "", json_text)
+        json_text = re.sub(r"\n```$", "", json_text)
+        # attempt to find first { and last }
+        first = json_text.find("{")
+        last = json_text.rfind("}")
+        if first != -1 and last != -1:
+            json_text = json_text[first:last+1]
+        parsed = json.loads(json_text)
+        return parsed
+    except Exception as e:
+        # fallback: return unknown
+        return {"intent": "unknown", "fields": {}}
+
+
+# Report generators
+def generate_tax_report_embed(company_data: dict) -> discord.Embed:
+    income = float(company_data.get("income") or 0.0)
+    expenses = float(company_data.get("expenses") or 0.0)
+    company_name = company_data.get("company_name") or "Unknown Company"
+    player_name = company_data.get("player_name") or "Unknown"
+    period = company_data.get("period") or "Period"
+
+    net_profit = income - expenses
+
+    embed = discord.Embed(
+        title=f"UNIVERSALIS BANK — Tax Assessment Report",
+        description=f"*{TELLER_NAME} prepares your tax assessment for {company_name} ({player_name}) — {period}*",
+        color=discord.Color.from_rgb(255, 193, 7),
+        timestamp=datetime.utcnow()
+    )
+
+    embed.add_field(
+        name="Overview",
+        value=(
+            f"**Company:** {company_name}\n"
+            f"**Client:** {player_name}\n"
+            f"**Period:** {period}\n"
+            f"**Gross Income:** {format_money(income)}\n"
+            f"**Expenses:** {format_money(expenses)}\n"
+        ),
+        inline=False
+    )
+
+    if net_profit <= 0:
+        embed.add_field(
+            name="Result",
+            value=f"Net Profit: {format_money(net_profit)}\n\n*No business income tax applies when there is no profit.*",
+            inline=False
+        )
+        embed.set_footer(text=f"Teller: {TELLER_NAME} | Universalis Bank")
+        return embed
+
+    business_tax, breakdown = calculate_progressive_tax(net_profit, settings["tax_brackets"])
+    profit_after_tax = net_profit - business_tax
+
+    # build breakdown string
+    btxt = ""
+    for b in breakdown:
+        rng = f"${b['min']:,.0f}" + (f" - ${b['max']:,.0f}" if b["max"] != float('inf') and b["max"] is not None else "+")
+        btxt += f"{rng} @ {b['rate']}%\n   Tax: {format_money(b['tax'])}\n"
+    btxt += f"\nTotal Business Tax: {format_money(business_tax)}"
+
+    embed.add_field(name="Tax Calculation", value=f"```\nNet Profit: {format_money(net_profit)}\n\n{btxt}\n```", inline=False)
+    embed.add_field(name="After Tax", value=f"```\nProfit After Tax: {format_money(profit_after_tax)}\n```", inline=False)
+    embed.set_footer(text=f"Teller: {TELLER_NAME} | Universalis Bank")
+    return embed
+
+def generate_transfer_report_embed(transfer: dict) -> discord.Embed:
+    src = transfer.get("source") or "Unknown"
+    dst = transfer.get("destination") or "Unknown"
+    amount = float(transfer.get("amount") or 0.0)
+    reason = transfer.get("reason") or "No reason provided"
+    e = discord.Embed(
+        title="UNIVERSALIS BANK — Transfer Report",
+        description=f"*{TELLER_NAME} processes the transfer...*",
+        color=discord.Color.from_rgb(0, 123, 255),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="Details", value=f"**From:** {src}\n**To:** {dst}\n**Amount:** {format_money(amount)}\n**Reason:** {reason}\n", inline=False)
+    e.add_field(name="Status", value="✔️ Completed", inline=False)
+    e.set_footer(text=f"Teller: {TELLER_NAME} | Universalis Bank")
+    return e
+
+def generate_loan_notice_embed(loan: dict, requester: discord.Member) -> discord.Embed:
+    pname = loan.get("player_name") or "Unknown"
+    amount = float(loan.get("amount") or 0.0)
+    purpose = loan.get("purpose") or "No purpose given"
+    collateral = loan.get("collateral") or "None"
+    e = discord.Embed(
+        title="UNIVERSALIS BANK — Loan Request",
+        description="*A loan request has been submitted and requires manager attention.*",
+        color=discord.Color.from_rgb(220, 53, 69),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="Requester", value=f"{pname} ({requester.display_name})", inline=False)
+    e.add_field(name="Amount", value=format_money(amount), inline=True)
+    e.add_field(name="Purpose", value=purpose, inline=True)
+    e.add_field(name="Collateral", value=collateral, inline=False)
+    e.set_footer(text=f"Teller: {TELLER_NAME} | Universalis Bank")
+    return e
+
+
+# Intents & Bot init
+intents = discord.Intents.default()
+intents.message_content = True
+intents.guilds = True
+intents.members = True
+intents.messages = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+# Background cleanup
+@tasks.loop(minutes=5.0)
+async def cleanup_sessions_task():
+    thread_manager.cleanup()
+
+
+# BOT EVENTS
+@bot.event
+async def on_ready():
+    # Start background tasks here (safe to create tasks once the loop exists)
+    if not cleanup_sessions_task.is_running():
+        cleanup_sessions_task.start()
+    print(f"{bot.user} is ready. Watching forum id {WATCH_FORUM_ID} for thread creations.")
+
+@bot.event
+async def on_thread_create(thread: discord.Thread):
+    # only respond to the configured forum channel
+    parent = getattr(thread, "parent", None)
+    if not parent:
+        return
+    # parent.id is the forum channel id in API v2
+    try:
+        if parent.id != WATCH_FORUM_ID:
+            return
+    except Exception:
+        return
+
+    # get starter if possible
+    starter = None
+    if hasattr(thread, "owner_id") and thread.owner_id:
+        try:
+            starter = thread.guild.get_member(thread.owner_id) or await thread.guild.fetch_member(thread.owner_id)
+        except Exception:
+            starter = None
+
+    # create session
+    session = thread_manager.create(thread, starter)
+
+    greeting = (
+        f"👋 **Welcome to Universalis Bank.**\n"
+        f"I am **{TELLER_NAME}**, your virtual bank teller. How may I assist you today?\n\n"
+        f"Please reply in this thread with what you need (examples):\n"
+        f"- \"Calculate company taxes for [CompanyName]: income 12k, expenses 3k\"\n"
+        f"- \"Transfer 2.5k from CompanyName to PlayerName for payout\"\n"
+        f"- \"Request a loan of 5k for colony expansion\"\n\n"
+        f"I can understand natural requests — just type them and I'll respond."
+    )
+    try:
+        await thread.send(greeting)
+    except Exception:
+        try:
+            await parent.send(greeting)
+        except Exception:
+            pass
+
+@bot.event
+async def on_message(message: discord.Message):
+    # Let commands still work
+    await bot.process_commands(message)
+
+    if message.author.bot:
+        return
+
+    channel = message.channel
+    if not isinstance(channel, discord.Thread):
+        return
+
+    session = thread_manager.get(channel.id)
+    if not session:
+        return
+
+    # Only let the starter or an admin operate the session
+    if session.starter and message.author.id != session.starter.id:
+        member = message.author
+        if message.guild and isinstance(member, discord.Member) and member.guild_permissions.administrator:
+            pass
+        else:
+            try:
+                await channel.send("*Kirztin says: Only the thread starter may interact with this session, or ask an admin for assistance.*")
+            except Exception:
+                pass
+            return
+
+    session.touch()
+    session.messages.append((message.author.id, message.content, datetime.utcnow()))
+
+    # Use OpenAI to parse intent
+    parsed = await ask_openai_for_intent(message.content)
+    intent = parsed.get("intent", "unknown")
+    fields = parsed.get("fields", {})
+
+    # If the user sends a single-letter choice like "A" or "B", treat appropriately
+    lower = message.content.strip().lower()
+    if lower in ("a", "b", "company", "loan", "tax", "transfer", "calculate", "finish"):
+        # map simple keywords
+        if lower in ("a", "company"):
+            intent = "choice"
+            fields = {"choice": "company"}
+        elif lower in ("b", "loan"):
+            intent = "choice"
+            fields = {"choice": "loan"}
+        elif "tax" in lower or "calculate" in lower:
+            intent = "tax"
+        elif "transfer" in lower:
+            intent = "transfer"
+        elif lower in ("finish", "calculate"):
+            intent = "finish"
+
+    # Branch on intent
+    if intent == "choice" and fields.get("choice") == "company":
+        session.state = "AWAITING_COMPANY_SUBCHOICE"
+        await channel.send("*\"Company Services — would you like 'tax' (calculate taxes) or 'transfer' (company transfer)?\"*")
+        return
+
+    if intent == "tax":
+        # Fields may already contain data parsed by OpenAI; ask follow-ups for missing fields
+        session.state = "COMPANY_TAX"
+        # fill fields into session.company where present
+        if "company_name" in fields:
+            session.company["company_name"] = fields["company_name"]
+        if "player_name" in fields:
+            session.company["player_name"] = fields["player_name"]
+        if "income" in fields:
+            try:
+                session.company["income"] = float(fields["income"])
+            except Exception:
+                session.company["income"] = None
+        if "expenses" in fields:
+            try:
+                session.company["expenses"] = float(fields["expenses"])
+            except Exception:
+                session.company["expenses"] = None
+        if "period" in fields:
+            session.company["period"] = fields["period"]
+
+        # ask for any missing required field in turn
+        if not session.company["company_name"]:
+            session.substate = "ASK_COMPANY_NAME"
+            await channel.send("*\"What's the company name?\"*")
+            return
+        if not session.company["player_name"]:
+            session.substate = "ASK_PLAYER_NAME"
+            await channel.send("*\"What's the character/player name for this company?\"*")
+            return
+        if session.company["income"] is None:
+            session.substate = "ASK_INCOME"
+            await channel.send("*\"What is the gross income for the period? (e.g., 12k or 12000)\"*")
+            return
+        if session.company["expenses"] is None:
+            session.substate = "ASK_EXPENSES"
+            await channel.send("*\"How much in expenses? (enter 0 if none)\"*")
+            return
+        # all present -> generate report
+        embed = generate_tax_report_embed(session.company)
+        await channel.send(embed=embed)
+        session.state = "FINISHED"
+        thread_manager.remove(channel.id)
+        return
+
+    if session.state == "COMPANY_TAX":
+        # we're mid-flow for a tax collection — check substate to accept answers
+        if session.substate == "ASK_COMPANY_NAME":
+            session.company["company_name"] = message.content.strip()
+            session.substate = None
+            await channel.send(f"*\"Recorded company: **{session.company['company_name']}**. Now what's the player name?\"*")
+            return
+        if session.substate == "ASK_PLAYER_NAME":
+            session.company["player_name"] = message.content.strip()
+            session.substate = None
+            await channel.send(f"*\"Recorded player: **{session.company['player_name']}**. Now enter gross income (e.g., 12k).\"*")
+            return
+        if session.substate == "ASK_INCOME":
+            # parse money
+            parsed = None
+            try:
+                parsed = parse_money_local(message.content)
+            except Exception:
+                parsed = None
+            if parsed is None:
+                await channel.send("*\"I couldn't parse that amount — please use formats like 12k, 12000, or $12,000.\"*")
+                return
+            session.company["income"] = parsed
+            await channel.send(f"*\"Income recorded: {format_money(parsed)}. How much are expenses?\"*")
+            return
+        if session.substate == "ASK_EXPENSES":
+            parsed = parse_money_local(message.content)
+            if parsed is None:
+                await channel.send("*\"I couldn't parse that amount — please use formats like 5k, 5000, or $5,000.\"*")
+                return
+            session.company["expenses"] = parsed
+            # done -> generate report
+            embed = generate_tax_report_embed(session.company)
+            await channel.send(embed=embed)
+            session.state = "FINISHED"
+            thread_manager.remove(channel.id)
+            return
+
+    if intent == "transfer":
+        session.state = "COMPANY_TRANSFER"
+        # Accept fields if present
+        if "source" in fields:
+            session.transfer["source"] = fields["source"]
+        if "destination" in fields:
+            session.transfer["destination"] = fields["destination"]
+        if "amount" in fields:
+            try:
+                session.transfer["amount"] = float(fields["amount"])
+            except Exception:
+                session.transfer["amount"] = None
+        if "reason" in fields:
+            session.transfer["reason"] = fields["reason"]
+        # ask for missing data
+        if not session.transfer["source"]:
+            session.substate = "ASK_TRANSFER_SOURCE"
+            await channel.send("*\"Who is the source of funds? (e.g., CompanyName or PlayerName)\"*")
+            return
+        if not session.transfer["destination"]:
+            session.substate = "ASK_TRANSFER_DEST"
+            await channel.send("*\"Who is the destination? (e.g., CompanyName or PlayerName)\"*")
+            return
+        if session.transfer["amount"] is None:
+            session.substate = "ASK_TRANSFER_AMOUNT"
+            await channel.send("*\"How much should be transferred?\"*")
+            return
+        # all present -> perform transfer (report only)
+        embed = generate_transfer_report_embed(session.transfer)
+        await channel.send(embed=embed)
+        session.state = "FINISHED"
+        thread_manager.remove(channel.id)
+        return
+
+    if session.state == "COMPANY_TRANSFER":
+        if session.substate == "ASK_TRANSFER_SOURCE":
+            session.transfer["source"] = message.content.strip()
+            session.substate = None
+            await channel.send(f"*\"Source recorded: {session.transfer['source']}. Now who is the destination?\"*")
+            return
+        if session.substate == "ASK_TRANSFER_DEST":
+            session.transfer["destination"] = message.content.strip()
+            session.substate = None
+            await channel.send(f"*\"Destination recorded: {session.transfer['destination']}. How much to transfer?\"*")
+            return
+        if session.substate == "ASK_TRANSFER_AMOUNT":
+            parsed = parse_money_local(message.content)
+            if parsed is None:
+                await channel.send("*\"I couldn't parse that amount — please use formats like 2.5k or 2500.\"*")
+                return
+            session.transfer["amount"] = parsed
+            # ask for reason
+            await channel.send("*\"Recorded amount. Any reason or note for the transfer? If none, reply 'none'.\"*")
+            session.substate = "ASK_TRANSFER_REASON"
+            return
+        if session.substate == "ASK_TRANSFER_REASON":
+            session.transfer["reason"] = message.content.strip()
+            embed = generate_transfer_report_embed(session.transfer)
+            await channel.send(embed=embed)
+            session.state = "FINISHED"
+            thread_manager.remove(channel.id)
+            return
+
+    if intent == "loan":
+        session.state = "LOAN"
+        if "player_name" in fields:
+            session.loan["player_name"] = fields["player_name"]
+        if "amount" in fields:
+            try:
+                session.loan["amount"] = float(fields["amount"])
+            except Exception:
+                session.loan["amount"] = None
+        if "purpose" in fields:
+            session.loan["purpose"] = fields["purpose"]
+        if "collateral" in fields:
+            session.loan["collateral"] = fields["collateral"]
+
+        if session.loan["player_name"] is None:
+            session.substate = "ASK_LOAN_NAME"
+            await channel.send("*\"Who is requesting the loan? (player/character name)\"*")
+            return
+        if session.loan["amount"] is None:
+            session.substate = "ASK_LOAN_AMOUNT"
+            await channel.send("*\"How much is being requested?\"*")
+            return
+        if session.loan["purpose"] is None:
+            session.substate = "ASK_LOAN_PURPOSE"
+            await channel.send("*\"What is the purpose of the loan?\"*")
+            return
+        if session.loan["collateral"] is None:
+            session.substate = "ASK_LOAN_COLLATERAL"
+            await channel.send("*\"Any collateral? If none, reply 'none'.\"*")
+            return
+        # all present -> create notice and ping bank manager role
+        embed = generate_loan_notice_embed(session.loan, message.author)
+        try:
+            await channel.send(content=f"<@&{BANK_MANAGER_ROLE_ID}> A loan request needs review.", embed=embed)
+        except Exception:
+            await channel.send(embed=embed)
+        session.state = "FINISHED"
+        thread_manager.remove(channel.id)
+        return
+
+    # mid-flow loan responses:
+    if session.state == "LOAN":
+        if session.substate == "ASK_LOAN_NAME":
+            session.loan["player_name"] = message.content.strip()
+            session.substate = None
+            await channel.send("*\"Name recorded. How much would you like to request?\"*")
+            return
+        if session.substate == "ASK_LOAN_AMOUNT":
+            parsed = parse_money_local(message.content)
+            if parsed is None:
+                await channel.send("*\"I couldn't parse that amount — try formats like 5k or 5000.\"*")
+                return
+            session.loan["amount"] = parsed
+            session.substate = None
+            await channel.send("*\"Amount recorded. What's the purpose of the loan?\"*")
+            return
+        if session.substate == "ASK_LOAN_PURPOSE":
+            session.loan["purpose"] = message.content.strip()
+            session.substate = "ASK_LOAN_COLLATERAL"
+            await channel.send("*\"Collateral? If none, reply 'none'.\"*")
+            return
+        if session.substate == "ASK_LOAN_COLLATERAL":
+            session.loan["collateral"] = message.content.strip()
+            embed = generate_loan_notice_embed(session.loan, message.author)
+            try:
+                await channel.send(content=f"<@&{BANK_MANAGER_ROLE_ID}> A loan request needs review.", embed=embed)
+            except Exception:
+                await channel.send(embed=embed)
+            session.state = "FINISHED"
+            thread_manager.remove(channel.id)
+            return
+
+    # If nothing matched, provide a helpful fallback
+    await channel.send("*\"I'm sorry — I couldn't interpret that. Please tell me if you want taxes, a transfer, or a loan. Example: 'Calculate taxes for IronWorks — income 12k, expenses 3k'\"*")
+
+
+# small local money parser (fallback)
+def parse_money_local(text: str) -> Optional[float]:
+    if not text:
+        return None
+    t = text.strip().lower()
+    t = t.replace('$', '').replace('uc', '')
+    match = re.search(r'([0-9]+(?:[.,][0-9]+)?)(\s*[km])?', t)
+    if not match:
+        return None
+    num_str = match.group(1).replace(',', '')
+    suffix = (match.group(2) or "").strip()
+    try:
+        val = float(num_str)
+    except Exception:
+        return None
+    if suffix == 'k':
+        val *= 1_000
+    elif suffix == 'm':
+        val *= 1_000_000
+    return val
+
+
+# Example slash command kept: view_rates
+@bot.tree.command(name="view_rates", description="View the current tax brackets and CEO salary rates")
+async def view_rates(interaction: discord.Interaction):
+    business_brackets = settings["tax_brackets"]
+    ceo_brackets = settings["ceo_tax_brackets"]
+    ceo_rate = settings["ceo_salary_percent"]
+
+    embed = discord.Embed(
+        title="Universalis Bank - Tax Rate Schedule",
+        description=f"*{TELLER_NAME} pulls up the current rates with a helpful smile...*",
+        color=discord.Color.from_rgb(0, 123, 255)
+    )
+
+    business_text = ""
+    for bracket in sorted(business_brackets, key=lambda x: x["min"]):
+        business_text += f"{format_bracket_range(bracket['min'], bracket['max'])}: {bracket['rate']}%\n"
+
+    embed.add_field(name="Business Income Tax Brackets", value=f"```\n{business_text}```", inline=False)
+
+    ceo_text = ""
+    for bracket in sorted(ceo_brackets, key=lambda x: x["min"]):
+        ceo_text += f"{format_bracket_range(bracket['min'], bracket['max'])}: {bracket['rate']}%\n"
+
+    embed.add_field(name="CEO Income Tax Brackets", value=f"```\n{ceo_text}```", inline=False)
+    embed.add_field(name="CEO Salary Rate", value=f"```\n{ceo_rate}% of post-tax business profit\n```", inline=False)
+    embed.set_footer(text=f"Teller: {TELLER_NAME} | Universalis Bank")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+def format_bracket_range(min_val, max_val):
+    if max_val is None or max_val == float('inf'):
+        return f"${min_val:,.0f}+"
+    return f"${min_val:,.0f} - ${max_val:,.0f}"
+
+
+# Run
+if __name__ == "__main__":
+    token = os.getenv("DISCORD_BOT_TOKEN")
+    if not token:
+        print("Error: DISCORD_BOT_TOKEN not found in environment variables!")
+        raise SystemExit(1)
+    print("Starting Universalis Bank Bot v3.0 (Kirztin)...")
+    bot.run(token)
         self.transfer_data = {
             "source": None,
             "destination": None,
