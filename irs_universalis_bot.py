@@ -1,5 +1,5 @@
 # irs_universalis_bot.py
-# Universalis Bank Bot v3.0.7 - Kirztin
+# Universalis Bank Bot v3.0.8 - Kirztin
 
 import os
 import re
@@ -397,7 +397,7 @@ class CalculatorView(ui.View):
             )
             embed.add_field(name="Assessment",
                             value="*\"Oh dear, it looks like your expenses exceeded your earnings this period. Don't worry though - no taxes or salary deductions apply when there's no profit. Let me know if you need any help planning for next quarter!\"*"),
-       return e
+       return embed
 
 def generate_loan_notice_embed(loan: dict, requester: discord.Member) -> discord.Embed:
     pname = loan.get("player_name") or "Unknown"
