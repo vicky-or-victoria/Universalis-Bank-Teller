@@ -1,4 +1,4 @@
-# irs_universalis_bot.py
+ # irs_universalis_bot.py
 # Universalis Bank Bot v3.0.2 - Kirztin (full file)
 
 import os
@@ -1149,6 +1149,39 @@ async def on_message(message: discord.Message):
     # VERY IMPORTANT: process commands too
     await bot.process_commands(message)
 
+@bot.event
+async def on_message(message: discord.Message):
+    # ignore bots (including yourself)
+    if message.author.bot:
+        return
+
+    # keep commands working
+    await bot.process_commands(message)
+
+    # Only respond inside threads under the watched forum ID
+    if isinstance(message.channel, discord.Thread) and message.channel.parent_id == WATCH_FORUM_ID:
+
+        user_text = message.content.strip()
+        if not user_text:
+            return
+
+        try:
+            # show typing indicator
+            async with message.channel.typing():
+                response = openai.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": f"You are {TELLER_NAME}, a friendly, soft-spoken Universalis Bank teller. Respond warmly, like a person."},
+                        {"role": "user", "content": user_text}
+                    ]
+                )
+                reply = response.choices[0].message.content
+
+        except Exception as e:
+            reply = f"⚠️ AI Error: {e}"
+
+        await message.channel.send(reply)
+        
 
 # Run the bot
 if __name__ == "__main__":
