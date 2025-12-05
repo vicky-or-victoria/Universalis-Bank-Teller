@@ -633,6 +633,7 @@ def generate_loan_notice_embed(loan: dict, requester: discord.Member) -> discord
 # Bot init + intents
 intents = discord.Intents.default()
 intents.message_content = True
+intents.messages = True
 intents.guilds = True
 intents.members = True
 intents.messages = True
@@ -701,16 +702,37 @@ async def on_thread_create(thread: discord.Thread):
 
 @bot.event
 async def on_message(message: discord.Message):
-    await bot.process_commands(message)  # allow commands to function
+    # Ignore messages from bots
     if message.author.bot:
         return
-    channel = message.channel
-    if not isinstance(channel, discord.Thread):
-        return
-    session = thread_manager.get(channel.id)
-    if not session:
-        return
 
+    # Handle messages in forum threads (very important)
+    if isinstance(message.channel, discord.Thread):
+        should_reply = True
+    else:
+        # Else reply only when mentioned
+        should_reply = bot.user in message.mentions
+
+    if should_reply:
+        try:
+            async with message.channel.typing():
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are Kirztin, a kind and helpful Universalis Bank Teller."},
+                        {"role": "user", "content": message.content},
+                    ]
+                )
+
+            reply = response.choices[0].message["content"]
+            await message.reply(reply)
+
+        except Exception as e:
+            await message.reply(f"Error: {e}")
+
+    # Required so slash commands still work
+    await bot.process_commands(message
+                              
     # restrict interactions to starter or admins
     if session.starter and message.author.id != session.starter.id:
         member = message.author
