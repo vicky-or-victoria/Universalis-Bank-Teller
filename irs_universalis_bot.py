@@ -759,7 +759,7 @@ Step 4: Inform the user that the transfer request is officially concluded.
 ------------------------------------------------------------
 GENERAL BEHAVIOR RULES
 ------------------------------------------------------------
-- Don't start sentences with Universalis Bank Teller:
+- Dont include in your messages "Universalis Bank Teller:"
 - Maintain a professional, roleplay-friendly tone unless asked otherwise.
 - Never skip required steps when gathering financial or loan data.
 - Always confirm user inputs before performing calculations.
@@ -858,8 +858,8 @@ async def on_thread_create(thread: discord.Thread):
     save_thread_status(thread.id, datetime.utcnow().isoformat(), completed=False)
     
     greeting = (
-        f"""🏛️ *You walk in a luxurious gilded hall. You are surrounded by people busy with their requests at the bank.. You find an available bank teller and head to her, you spot her tag which says her name: Kirztin.
-        -# Note: I'll be available for 10 minutes of inactivity. After that, please open a new thread!*"""
+        f"""🏛️ *You walk in a luxurious gilded hall. You are surrounded by people busy with their requests at the bank.. You find an available bank teller and head to her, you spot her tag which says her name: Kirztin.*
+        -# Note: I'll be available for 10 minutes of inactivity. After that, please open a new thread!"""
     )
     try:
         await thread.send(greeting)
