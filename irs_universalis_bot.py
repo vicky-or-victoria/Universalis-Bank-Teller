@@ -696,21 +696,6 @@ Step 2: Ask the user for the company's gross expenses.
 After receiving both values, ask:
 "Would you like to include a CEO salary percentage deducted from the company's net profit after taxes? If yes, provide the percentage."
 
-TAX RULES:
-- Taxes are progressive.
-- Tax brackets are adjustable depending on the user's Discord rank.
-- Taxes apply to gross profit (gross revenue - gross expenses).
-
-PROGRESSIVE TAX BRACKETS (Default Example):
-These are the base brackets unless the server overrides them with rank-specific ones:
-• 8% tax on the first 100,000 profit  
-• 10% tax on the next 400,000 (100,001–500,000)  
-• 12% tax on the next 500,000 (500,001–1,000,000) 
-• 13% tax on the next 9,000,000 (1,000,001-10,000,000)  
-• 15% tax on anything equal to or above 10,000,001 
-
-You must calculate tax by applying EACH bracket progressively, not by using a single-rate flat tax.
-
 After collecting the information, calculate and produce a formatted financial report containing:
 - Gross Revenue
 - Gross Expenses
@@ -755,6 +740,34 @@ Step 2: Summarize the transfer request in a formatted block
 Step 3: Ping the the Recipient
 
 Step 4: Inform the user that the transfer request is officially concluded.
+
+TAX RULES:
+- Taxes are progressive.
+- Tax brackets are adjustable depending on the user's Discord rank.
+- Taxes apply to gross profit (gross revenue - gross expenses).
+
+------------------------------------------------------------
+PROGRESSIVE TAX RULES
+------------------------------------------------------------
+PROGRESSIVE TAX BRACKETS (Default Example):
+These are the base brackets unless the server overrides them with rank-specific ones:
+• 8% tax: 100,000 profit  
+• 10% tax: 100,001–500,000
+• 12% tax: 500,001–1,000,000 
+• 13% tax: 1,000,001-10,000,000
+• 15% tax on anything equal to or above 10,000,001 
+
+CEO Income Tax Brackets
+$0 - $3,000: 10.0%
+$3,001 - $6,000: 15.0%
+$6,001 - $12,000: 20.0%
+$12,001 - $24,000: 30.0%
+$24,001 - $50,000: 35.0%
+$50,001+: 40.0%
+CEO Salary Rate
+10.0% of post-tax business profit (adjustable per calculation)
+
+You must calculate tax by applying EACH bracket progressively, not by using a single-rate flat tax.
 
 ------------------------------------------------------------
 GENERAL BEHAVIOR RULES
