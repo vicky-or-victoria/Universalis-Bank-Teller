@@ -1,5 +1,5 @@
 # irs_universalis_bot.py
-# Universalis Bank Bot v3.0.8 - Kirztin
+# Universalis Bank Bot v3.2.9 - Kirztin
 
 import os
 import re
@@ -18,11 +18,27 @@ import openai
 
 # Thread memory storage (thread-based memory, persistent)
 THREAD_MEMORY_FILE = "thread_memory.json"
+THREAD_STATUS_FILE = "thread_status.json"
 MAX_MEMORY_MESSAGES = 60  # total messages (user+assistant)
+INACTIVITY_TIMEOUT_MINUTES = 10  # Kirztin stops replying after this many minutes of inactivity
+
+COMPLETION_PHRASES = [
+    "no thanks", "no thank you", "that's all", "thats all", "that is all",
+    "nothing else", "i'm good", "im good", "all done", "we're done", "were done",
+    "goodbye", "bye bye", "cya", "see ya later",
+    "that will be all", "nothing more", "no more", "all set",
+    "i'm done", "im done", "we are done", "that's everything", "thats everything",
+    "no i'm good", "no im good", "nope that's all", "nope thats all"
+]
 
 def _ensure_thread_memory_file():
     if not Path(THREAD_MEMORY_FILE).exists():
         with open(THREAD_MEMORY_FILE, "w") as f:
+            json.dump({}, f)
+
+def _ensure_thread_status_file():
+    if not Path(THREAD_STATUS_FILE).exists():
+        with open(THREAD_STATUS_FILE, "w") as f:
             json.dump({}, f)
 
 def load_thread_memory(thread_id: int) -> List[Dict]:
@@ -56,6 +72,61 @@ def save_thread_memory(thread_id: int, messages: List[Dict]):
     data[str(thread_id)] = trimmed
     with open(THREAD_MEMORY_FILE, "w") as f:
         json.dump(data, f, indent=2)
+
+def load_thread_status(thread_id: int) -> Dict:
+    """Load status for a thread (last_activity timestamp, completed flag)."""
+    _ensure_thread_status_file()
+    try:
+        with open(THREAD_STATUS_FILE, "r") as f:
+            data = json.load(f)
+        return data.get(str(thread_id), {"last_activity": None, "completed": False})
+    except Exception:
+        return {"last_activity": None, "completed": False}
+
+def save_thread_status(thread_id: int, last_activity: str, completed: bool = False):
+    """Save status for a thread."""
+    _ensure_thread_status_file()
+    try:
+        with open(THREAD_STATUS_FILE, "r") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    
+    data[str(thread_id)] = {"last_activity": last_activity, "completed": completed}
+    with open(THREAD_STATUS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def is_thread_inactive(thread_id: int) -> bool:
+    """Check if a thread has been inactive for more than INACTIVITY_TIMEOUT_MINUTES."""
+    status = load_thread_status(thread_id)
+    last_activity_str = status.get("last_activity")
+    if not last_activity_str:
+        return False
+    try:
+        last_activity = datetime.fromisoformat(last_activity_str)
+        return datetime.utcnow() > last_activity + timedelta(minutes=INACTIVITY_TIMEOUT_MINUTES)
+    except Exception:
+        return False
+
+def is_thread_completed(thread_id: int) -> bool:
+    """Check if a thread has been marked as completed."""
+    status = load_thread_status(thread_id)
+    return status.get("completed", False)
+
+def mark_thread_completed(thread_id: int):
+    """Mark a thread as completed so Kirztin stops responding."""
+    status = load_thread_status(thread_id)
+    save_thread_status(thread_id, status.get("last_activity") or datetime.utcnow().isoformat(), completed=True)
+
+def is_completion_message(message: str) -> bool:
+    """Check if a message indicates the user is done with their request."""
+    msg_lower = message.lower().strip()
+    if len(msg_lower) > 100:
+        return False
+    for phrase in COMPLETION_PHRASES:
+        if phrase in msg_lower:
+            return True
+    return False
 
 async def fetch_thread_history_from_discord(message: discord.Message, limit: int = 25) -> List[Dict]:
     """
@@ -612,7 +683,7 @@ thread_manager = ThreadManager()
 
 # AI Prompt for OpenAI Kirztin
 KIRZTIN_SYSTEM_PROMPT = f"""
-You are {TELLER_NAME}, a female assistant built for a Discord roleplay economy, do not mention that it is Discord. You have two primary functions: Financial Reporting and Loan Processing. Follow the instructions below exactly.
+You are {TELLER_NAME}, a female assistant built for a Discord roleplay economy, do not mention that it is Discord or that it is in roleplay, if player asks the environment, mention that you're in the National Bank of the Union of Universalis. You have two primary functions: Financial Reporting and Loan Processing. Follow the instructions below exactly.
 
 ------------------------------------------------------------
 1. FINANCIAL REPORT FUNCTION
@@ -630,6 +701,16 @@ TAX RULES:
 - Tax brackets are adjustable depending on the user's Discord rank.
 - Taxes apply to gross profit (gross revenue - gross expenses).
 
+PROGRESSIVE TAX BRACKETS (Default Example):
+These are the base brackets unless the server overrides them with rank-specific ones:
+• 8% tax on the first 100,000 profit  
+• 10% tax on the next 400,000 (100,001–500,000)  
+• 12% tax on the next 500,000 (500,001–1,000,000) 
+• 13% tax on the next 9,000,000 (1,000,001-10,000,000)  
+• 15% tax on anything equal to or above 10,000,001 
+
+You must calculate tax by applying EACH bracket progressively, not by using a single-rate flat tax.
+
 After collecting the information, calculate and produce a formatted financial report containing:
 - Gross Revenue
 - Gross Expenses
@@ -639,7 +720,7 @@ After collecting the information, calculate and produce a formatted financial re
 - CEO Salary Deduction (if provided)
 - Final Profit After All Deductions
 
-Explain the math transparently, but stylized, and don't trim the responses.
+No need to explain the math, .
 
 ------------------------------------------------------------
 2. LOAN APPLICATION FUNCTION
@@ -771,6 +852,10 @@ async def on_thread_create(thread: discord.Thread):
             starter = None
 
     session = thread_manager.create(thread, starter)
+    
+    # Initialize thread status with current timestamp
+    save_thread_status(thread.id, datetime.utcnow().isoformat(), completed=False)
+    
     greeting = (
         f"👋 **Welcome to Universalis Bank.**\n"
         f"I am **{TELLER_NAME}**, your virtual bank teller. How may I assist you today?\n\n"
@@ -778,7 +863,8 @@ async def on_thread_create(thread: discord.Thread):
         f"- \"Calculation for your company's taxes.\"\n"
         f"- \"Transfer of funds between companies.\"\n"
         f"- \"Loan requests.\"\n"
-        f"Just say anything, and I'll respond."
+        f"Just say anything, and I'll respond.\n\n"
+        f"*Note: I'll be available for 10 minutes of inactivity. After that, please open a new thread!*"
     )
     try:
         await thread.send(greeting)
@@ -803,8 +889,29 @@ async def on_message(message: discord.Message):
     if message.channel.parent_id != WATCH_FORUM_ID:
         return
 
-    # build or load memory for this thread
     thread_id = message.channel.id
+
+    # Check if thread is inactive (10 minutes without activity) or completed
+    if is_thread_inactive(thread_id):
+        return
+    if is_thread_completed(thread_id):
+        return
+
+    # Check if this message indicates the user is done
+    if is_completion_message(message.content):
+        mark_thread_completed(thread_id)
+        farewell = (
+            f"*{TELLER_NAME} smiles warmly and nods.*\n\n"
+            f"\"Thank you for visiting Universalis Bank! If you need anything else in the future, "
+            f"just open a new thread. Have a wonderful day!\" 💼✨"
+        )
+        try:
+            await message.channel.send(farewell)
+        except Exception:
+            pass
+        return
+
+    # build or load memory for this thread
     memory = load_thread_memory(thread_id)
 
     # if there is no persisted memory yet, seed it from last few Discord messages
@@ -859,8 +966,13 @@ async def on_message(message: discord.Message):
     try:
         save_thread_memory(thread_id, memory)
     except Exception:
-        # avoid crashing; log or ignore
         print(f"Warning: failed to save memory for thread {thread_id}")
+
+    # Update last activity timestamp for this thread
+    try:
+        save_thread_status(thread_id, datetime.utcnow().isoformat(), completed=False)
+    except Exception:
+        print(f"Warning: failed to save status for thread {thread_id}")
         
 
 # Slash commands (kept and adapted)
