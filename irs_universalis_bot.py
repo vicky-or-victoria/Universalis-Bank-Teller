@@ -287,7 +287,7 @@ class CalculatorSession:
         self.ceo_salary_multiplier = 100
         self.items: List[dict] = []
         self.expenses: float = 0.0
-        self.dialogue = "*The bank teller greets you with a warm smile...*\n\n*\"Welcome! Let's calculate your business finances. Use the buttons below to build your financial report!\"*"
+        self.dialogue = "*The bank teller greets you with a warm smile...*\n\n*\"Welcome Let's calculate your business finances. Use the buttons below to build your financial report!\"*"
         self.created_at = datetime.utcnow()
         self.timeout_minutes = 10
 
@@ -840,7 +840,7 @@ intents.guilds = True
 intents.members = True
 intents.messages = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="ub!", intents=intents)
 
 
 # Cleanup background task (start inside on_ready)
