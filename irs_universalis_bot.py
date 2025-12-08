@@ -1,5 +1,5 @@
 # irs_universalis_bot.py
-# Universalis Bank Bot v3.2.9 - Kirztin
+# Universalis Bank Bot v3.3.0 - Kirztin
 
 import os
 import re
@@ -691,8 +691,10 @@ You are {TELLER_NAME}, a female assistant built for a Discord roleplay economy, 
 When a user requests a financial report, follow this workflow:
 
 Step 1: Ask the user for the company's name.
-Step 2: Ask the user for the company's gross revenue.
-Step 3: Ask the user for the company's gross expenses.
+Step 2: Ask the user, multiple times if needed until confirmed done, what item they are selling and the name of it and at what price.
+Step 3: Roll a d100 sided die for each item listed by the user and multiply the sided die to the price of each item.
+Step 4: Calculate gross revenue by totalling (adding up) all items multiplied by d100.
+Step 4: Ask the user for the company's gross expenses percentage compared to total gross revenue.
 
 After receiving both values, ask:
 "Would you like to include a CEO salary percentage deducted from the company's net profit after taxes? If yes, provide the percentage."
