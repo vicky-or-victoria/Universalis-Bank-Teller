@@ -1,7 +1,5 @@
 # Universalis Bank Teller (refactor)
 
-This repository contains a modular Discord bot that manages finance/stock interactions and forum thread handling. The bot responds automatically to messages posted in a configured forum channel and also provides commands (including slash/hybrid commands).
-
 Features:
 - Automatic responses to players in a specific forum channel when they create threads or post messages.
 - Financial report parsing (Format: Company | Revenue | Expenses) with progressive tax calculation and an embed response.
