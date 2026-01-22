@@ -331,7 +331,7 @@ def generate_loan_embed(
     embed.set_footer(text=f"Prepared by {TELLER_NAME}")
     return embed
 
-def generate_transfer_embed(
+async def generate_transfer_embed(
     sender: str,
     receiver: str,
     amount: float,
@@ -370,6 +370,7 @@ def generate_transfer_embed(
 
     embed.set_footer(text=f"Processed by {TELLER_NAME}")
     return embed
+
 
 await thread.send(
     embed=generate_transfer_embed(
