@@ -32,11 +32,11 @@ class UniversalisBot(commands.Bot):
         
         # Load all cogs
         cogs = [
-            "forum_responder",
-            "financial_reports",
-            "stock_market",
-            "background_tasks",
-            "admin"
+            "cogs.forum_responder",
+            "cogs.financial_reports",
+            "cogs.stock_market",
+            "cogs.background_tasks",
+            "cogs.admin"
         ]
         
         for cog in cogs:
