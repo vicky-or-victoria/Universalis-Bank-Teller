@@ -1,27 +1,26 @@
-# Universalis Bank Bot v4.2
-# Kirztin – Universalis Bank Teller (Company Financial Reports)
+# Universalis Bank Bot "Kirztin" v4.4
+# Rigid now
 
 import os
 import json
 import asyncio
+import random
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict
+from typing import Dict, List
 
 import discord
 from discord.ext import commands, tasks
-import openai
 
-# ------------------ ENVIRONMENT ------------------
+# ENVIRONMENT
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-OPENAI_KEY = os.getenv("OPENAI_KEY")
 FORUM_ID = int(os.getenv("FORUM_ID"))
-NOTIFY_ROLE_ID = int(os.getenv("NOTIFY_ROLE_ID", 0))  # Discord role to ping (optional)
+ROLE_ID = int(os.getenv("ROLE_ID"))  # Role to ping when report finalized
 
-if not DISCORD_TOKEN or not OPENAI_KEY or not FORUM_ID:
-    raise RuntimeError("Missing required environment variables")
+if not DISCORD_TOKEN or not FORUM_ID or not ROLE_ID:
+    raise RuntimeError("Missing environment variables")
 
-# ------------------ CONSTANTS ------------------
+# CONSTANTS
 TELLER_NAME = "Kirztin"
 INACTIVITY_MINUTES = 10
 MAX_MEMORY = 50
@@ -31,49 +30,55 @@ DATA_DIR.mkdir(exist_ok=True)
 
 MEMORY_FILE = DATA_DIR / "thread_memory.json"
 STATUS_FILE = DATA_DIR / "thread_status.json"
+TAX_FILE = DATA_DIR / "tax_brackets.json"
+CRYPTO_FILE = DATA_DIR / "crypto_market.json"
 
 memory_lock = asyncio.Lock()
 status_lock = asyncio.Lock()
+market_lock = asyncio.Lock()
 
-# ------------------ OPENAI SETUP ------------------
-client = openai.OpenAI(api_key=OPENAI_KEY)
+# DEFAULT TAX BRACKETS
+DEFAULT_TAX_BRACKETS = [
+    {"min": 0, "max": 24000, "rate": 0},
+    {"min": 24001, "max": 50000, "rate": 5},
+    {"min": 50001, "max": 100000, "rate": 15},
+    {"min": 100001, "max": 200000, "rate": 25},
+    {"min": 200001, "max": 500000, "rate": 30},
+    {"min": 500001, "max": None, "rate": 35},
+]
 
-SYSTEM_PROMPT = f"""
-You are {TELLER_NAME}, a Universalis Bank Teller.
-You only:
-- Collect missing financial inputs from users step by step.
-- Confirm all collected inputs with Yes/No.
-- Reference Python functions for calculations: calculate_loan(), calculate_progressive_tax().
-- Format results into a professional financial report.
-Do NOT perform calculations yourself; Python does the math.
-"""
+# DEFAULT CRYPTO MARKET
+DEFAULT_CRYPTO = {
+    "CoinA": {"price": 100.0, "last_update": None},
+    "CoinB": {"price": 50.0, "last_update": None},
+    "CoinC": {"price": 250.0, "last_update": None},
+}
 
-# ------------------ UTILITIES ------------------
-def load_json(path: Path) -> dict:
+# UTILITIES
+def load_json(path: Path):
     if not path.exists():
         return {}
     with open(path, "r") as f:
         return json.load(f)
 
-def save_json(path: Path, data: dict):
+def save_json(path: Path, data):
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
-# ------------------ CALCULATIONS ------------------
-TAX_BRACKETS = [
-    {"min": 0, "max": 24_000, "rate": 0},
-    {"min": 24_001, "max": 50_000, "rate": 5},
-    {"min": 50_001, "max": 100_000, "rate": 15},
-    {"min": 100_001, "max": 200_000, "rate": 25},
-    {"min": 200_001, "max": 500_000, "rate": 30},
-    {"min": 500_001, "max": None, "rate": 35},
-]
+# TAX
+def load_tax_brackets():
+    data = load_json(TAX_FILE)
+    if not data:
+        save_json(TAX_FILE, DEFAULT_TAX_BRACKETS)
+        return DEFAULT_TAX_BRACKETS
+    return data
 
-def calculate_progressive_tax(amount: float) -> Dict:
+def calculate_progressive_tax(amount: float, brackets=None):
+    brackets = brackets or load_tax_brackets()
     remaining = amount
     total_tax = 0.0
     breakdown = []
-    for bracket in TAX_BRACKETS:
+    for bracket in brackets:
         low = bracket["min"]
         high = bracket["max"] or float("inf")
         if amount <= low:
@@ -87,7 +92,8 @@ def calculate_progressive_tax(amount: float) -> Dict:
             break
     return {"total_tax": total_tax, "breakdown": breakdown}
 
-def calculate_loan(principal: float, rate: float, months: int) -> Dict:
+# LOANS
+def calculate_loan(principal: float, rate: float, months: int):
     monthly_rate = rate / 100 / 12
     monthly_payment = principal * monthly_rate / (1 - (1 + monthly_rate) ** -months)
     total_paid = monthly_payment * months
@@ -99,80 +105,81 @@ def calculate_loan(principal: float, rate: float, months: int) -> Dict:
         "interest_paid": interest_paid
     }
 
-# ------------------ EMBED BUILDERS ------------------
-def generate_transfer_embed(sender: str, receiver: str, amount: float, reason: str) -> discord.Embed:
+# CRYPTO MARKET
+def load_crypto():
+    data = load_json(CRYPTO_FILE)
+    if not data:
+        save_json(CRYPTO_FILE, DEFAULT_CRYPTO)
+        return DEFAULT_CRYPTO
+    return data
+
+def save_crypto(data):
+    save_json(CRYPTO_FILE, data)
+
+async def update_daily_crypto():
+    async with market_lock:
+        market = load_crypto()
+        for coin, info in market.items():
+            change_pct = random.uniform(-0.1, 0.1)  # ±10%
+            info["price"] = round(info["price"] * (1 + change_pct), 2)
+            info["last_update"] = datetime.utcnow().isoformat()
+        save_crypto(market)
+
+# EMBEDS
+def generate_transfer_embed(sender, receiver, amount, reason):
     embed = discord.Embed(
         title="💼 Company Transfer Receipt",
         color=discord.Color.green(),
         timestamp=datetime.utcnow()
     )
-    embed.add_field(name="📤 Sender", value=f"```{sender}```", inline=True)
-    embed.add_field(name="📥 Receiver", value=f"```{receiver}```", inline=True)
-    embed.add_field(name="💰 Amount", value=f"```{amount:,.2f}```", inline=False)
-    embed.add_field(name="📝 Reason", value=f"```{reason}```", inline=False)
+    embed.add_field(name="Sender", value=f"```{sender}```", inline=True)
+    embed.add_field(name="Receiver", value=f"```{receiver}```", inline=True)
+    embed.add_field(name="Amount", value=f"```{amount:,.2f}```", inline=False)
+    embed.add_field(name="Reason", value=f"```{reason}```", inline=False)
     embed.set_footer(text=f"Processed by {TELLER_NAME}")
     return embed
 
-def generate_loan_embed(borrower: str, principal: float, rate: float, months: int) -> discord.Embed:
-    loan = calculate_loan(principal, rate, months)
+def generate_financial_report_embed(company_name, revenue, expenses, crypto_holdings=None):
+    net_income = revenue - expenses
+    tax_data = calculate_progressive_tax(net_income)
+    total_tax = tax_data["total_tax"]
+    breakdown = "\n".join(tax_data["breakdown"])
+    crypto_value = 0.0
+    market = load_crypto()
+    if crypto_holdings:
+        for coin, amount in crypto_holdings.items():
+            if coin in market:
+                crypto_value += market[coin]["price"] * amount
     embed = discord.Embed(
-        title="🏦 Loan Approval Summary",
+        title=f"🏦 Financial Report: {company_name}",
         color=discord.Color.gold(),
         timestamp=datetime.utcnow()
     )
     embed.add_field(
-        name="📄 Loan Terms",
-        value=(
-            "```"
-            f"Borrower: {borrower}\n"
-            f"Principal: {principal:,.2f}\n"
-            f"Rate: {rate}% annually\n"
-            f"Duration: {months} months"
-            "```"
-        ),
+        name="Revenue / Expenses",
+        value=f"Revenue: {revenue:,.2f}\nExpenses: {expenses:,.2f}\nNet Income: {net_income:,.2f}",
         inline=False
     )
     embed.add_field(
-        name="📐 Repayment Calculation",
-        value=(
-            "```"
-            f"Monthly Rate: {loan['monthly_rate']:.5f}\n"
-            f"Monthly Payment: {loan['monthly_payment']:,.2f}\n"
-            f"Total Paid: {loan['total_paid']:,.2f}\n"
-            f"Interest Paid: {loan['interest_paid']:,.2f}"
-            "```"
-        ),
+        name="Taxes",
+        value=f"Total Tax: {total_tax:,.2f}\nBreakdown:\n{breakdown}",
         inline=False
     )
+    if crypto_holdings:
+        embed.add_field(
+            name="Crypto Assets",
+            value=f"Value: {crypto_value:,.2f}\nHoldings: {crypto_holdings}",
+            inline=False
+        )
     embed.set_footer(text=f"Prepared by {TELLER_NAME}")
     return embed
 
-def generate_tax_embed(company_name: str, revenue: float, expenses: float) -> discord.Embed:
-    taxable_income = revenue - expenses
-    tax_info = calculate_progressive_tax(taxable_income)
-    embed = discord.Embed(
-        title=f"📊 Financial Report: {company_name}",
-        color=discord.Color.blue(),
-        timestamp=datetime.utcnow()
-    )
-    embed.add_field(name="Gross Revenue", value=f"```{revenue:,.2f}```", inline=True)
-    embed.add_field(name="Expenses", value=f"```{expenses:,.2f}```", inline=True)
-    embed.add_field(name="Taxable Income", value=f"```{taxable_income:,.2f}```", inline=False)
-    embed.add_field(
-        name="Tax Breakdown",
-        value="```" + "\n".join(tax_info["breakdown"]) + "```",
-        inline=False
-    )
-    embed.add_field(name="Total Tax", value=f"```{tax_info['total_tax']:,.2f}```", inline=False)
-    embed.set_footer(text=f"Prepared by {TELLER_NAME}")
-    return embed
-
-# ------------------ BOT SETUP ------------------
+# BOT SETUP
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="ub!", intents=intents)
 
-# ------------------ THREAD MANAGEMENT ------------------
+# THREAD MANAGEMENT
 @bot.event
 async def on_thread_create(thread: discord.Thread):
     if thread.parent_id != FORUM_ID:
@@ -183,22 +190,15 @@ async def on_thread_create(thread: discord.Thread):
         save_json(STATUS_FILE, status)
     async with memory_lock:
         memory = load_json(MEMORY_FILE)
-        memory[str(thread.id)] = {"mode": "data_collection", "inputs": {}, "history": [], "notify_role": None}
+        memory[str(thread.id)] = {"mode": "data_collection", "companies": {}, "history": []}
         save_json(MEMORY_FILE, memory)
-    await thread.send(
-        f"🏛️ **{TELLER_NAME}**: Welcome. Please provide your financial request. Type **all done** to finalize."
-    )
+    await thread.send(f"🏛️ **{TELLER_NAME}**: Welcome. Please provide your company financial data. Type **all done** to finalize.")
 
-# ------------------ MESSAGE HANDLING ------------------
+# MESSAGE HANDLING
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot:
+    if message.author.bot or not isinstance(message.channel, discord.Thread) or message.channel.parent_id != FORUM_ID:
         return
-    if not isinstance(message.channel, discord.Thread):
-        return
-    if message.channel.parent_id != FORUM_ID:
-        return
-
     thread_id = str(message.channel.id)
 
     # Update last activity
@@ -207,136 +207,59 @@ async def on_message(message: discord.Message):
         status[thread_id]["last_activity"] = datetime.utcnow().isoformat()
         save_json(STATUS_FILE, status)
 
-    # Load memory
-    async with memory_lock:
-        memory = load_json(MEMORY_FILE)
-        thread_memory = memory.get(thread_id, {"mode": "data_collection", "inputs": {}, "history": [], "notify_role": None})
-        mode = thread_memory["mode"]
-        inputs = thread_memory["inputs"]
-        history = thread_memory["history"]
-        notify_role = thread_memory.get("notify_role")
-
-    # Append user message
-    history.append({"role": "user", "content": message.content})
-    history = history[-MAX_MEMORY:]
-    thread_memory["history"] = history
-
-    # ------------------ FINALIZE THREAD ------------------
+    # Finalize thread
     if message.content.lower().strip() == "all done":
-        # Ask about pinging the role first
-        if NOTIFY_ROLE_ID and notify_role is None:
-            thread_memory["mode"] = "ask_ping_role"
-            await message.channel.send(
-                f"Do you want to notify <@&{NOTIFY_ROLE_ID}>? (Yes/No)"
-            )
-        else:
-            # Lock & close
-            thread = message.channel
-            original_name = thread.name
-            if not original_name.startswith("[CLOSED]"):
-                await thread.edit(name=f"[CLOSED] {original_name}", locked=True)
-            else:
-                await thread.edit(locked=True)
-            async with status_lock:
-                status = load_json(STATUS_FILE)
-                status[thread_id]["closed"] = True
-                save_json(STATUS_FILE, status)
-            # Ping role if set
-            if notify_role:
-                await thread.send(f"<@&{NOTIFY_ROLE_ID}> This thread has been finalized.")
-        # Save memory
         async with memory_lock:
-            memory[thread_id] = thread_memory
-            save_json(MEMORY_FILE, memory)
-        return
-
-    # ------------------ ASK PING ROLE ------------------
-    if mode == "ask_ping_role":
-        if message.content.lower() in ["yes", "y"]:
-            thread_memory["notify_role"] = True
-        else:
-            thread_memory["notify_role"] = False
-        # Lock thread & rename
-        thread = message.channel
-        original_name = thread.name
-        if not original_name.startswith("[CLOSED]"):
-            await thread.edit(name=f"[CLOSED] {original_name}", locked=True)
-        else:
-            await thread.edit(locked=True)
-        # Ping role if confirmed
-        if thread_memory["notify_role"] and NOTIFY_ROLE_ID:
-            await thread.send(f"<@&{NOTIFY_ROLE_ID}> This thread has been finalized.")
+            memory = load_json(MEMORY_FILE)
+            companies = memory.get(thread_id, {}).get("companies", {})
+        for name, data in companies.items():
+            embed = generate_financial_report_embed(name, data["revenue"], data["expenses"], data.get("crypto"))
+            await message.channel.send(embed=embed)
+        # Ping role
+        await message.channel.send(f"<@&{ROLE_ID}> Financial reports finalized.")
+        # Rename thread
+        if not message.channel.name.startswith("[CLOSED]"):
+            await message.channel.edit(name=f"[CLOSED] {message.channel.name}")
+        await message.channel.edit(locked=True)
         async with status_lock:
-            status = load_json(STATUS_FILE)
             status[thread_id]["closed"] = True
             save_json(STATUS_FILE, status)
-        # Reset memory
-        thread_memory = {"mode": "data_collection", "inputs": {}, "history": [], "notify_role": None}
         async with memory_lock:
-            memory[thread_id] = thread_memory
-            save_json(MEMORY_FILE, memory)
+            if thread_id in memory:
+                memory.pop(thread_id)
+                save_json(MEMORY_FILE, memory)
         return
 
-    # ------------------ MODE: DATA COLLECTION ------------------
-    if mode == "data_collection":
-        # Ask GPT for missing inputs
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            max_tokens=400
-        )
-        reply = response.choices[0].message.content
-        await message.channel.send(reply)
+    # Input parsing: expected format -> CompanyName | revenue | expenses | coin:amount,...
+    try:
+        parts = [p.strip() for p in message.content.split("|")]
+        company_name = parts[0]
+        revenue = float(parts[1])
+        expenses = float(parts[2])
+        crypto_holdings = {}
+        if len(parts) > 3:
+            coins = parts[3].split(",")
+            for coin in coins:
+                c, amt = coin.split(":")
+                crypto_holdings[c.strip()] = float(amt)
+    except Exception:
+        await message.channel.send("Invalid input format. Example:\n`AcmeCorp | 50000 | 30000 | CoinA:10,CoinB:5`")
+        return
 
-        # Detect if GPT says "all inputs collected"
-        if "all inputs collected" in reply.lower():
-            thread_memory["mode"] = "confirmation"
-
-    # ------------------ MODE: CONFIRMATION ------------------
-    elif mode == "confirmation":
-        if message.content.lower() in ["yes", "y"]:
-            thread_memory["mode"] = "calculation"
-            await message.channel.send(f"**{TELLER_NAME}**: Inputs confirmed. Performing calculations.")
-        elif message.content.lower() in ["no", "n"]:
-            thread_memory["mode"] = "data_collection"
-            await message.channel.send(f"**{TELLER_NAME}**: Please provide missing inputs again.")
-        else:
-            await message.channel.send("Please reply with **Yes** or **No**.")
-
-    # ------------------ MODE: CALCULATION ------------------
-    elif mode == "calculation":
-        # Python performs actual calculations
-        if inputs.get("type") == "loan":
-            borrower = inputs.get("borrower", "N/A")
-            principal = float(inputs.get("principal", 0))
-            rate = float(inputs.get("rate", 0))
-            months = int(inputs.get("months", 1))
-            embed = generate_loan_embed(borrower, principal, rate, months)
-            await message.channel.send(embed=embed)
-        elif inputs.get("type") == "transfer":
-            sender = inputs.get("sender", "N/A")
-            receiver = inputs.get("receiver", "N/A")
-            amount = float(inputs.get("amount", 0))
-            reason = inputs.get("reason", "")
-            embed = generate_transfer_embed(sender, receiver, amount, reason)
-            await message.channel.send(embed=embed)
-        elif inputs.get("type") == "tax_report":
-            company_name = inputs.get("company_name", "N/A")
-            revenue = float(inputs.get("revenue", 0))
-            expenses = float(inputs.get("expenses", 0))
-            embed = generate_tax_embed(company_name, revenue, expenses)
-            await message.channel.send(embed=embed)
-
-        # Reset memory
-        thread_memory = {"mode": "data_collection", "inputs": {}, "history": [], "notify_role": None}
-
-    # Save memory
     async with memory_lock:
+        memory = load_json(MEMORY_FILE)
+        thread_memory = memory.get(thread_id, {"mode":"data_collection","companies":{},"history":[]})
+        thread_memory["companies"][company_name] = {
+            "revenue": revenue,
+            "expenses": expenses,
+            "crypto": crypto_holdings
+        }
+        thread_memory["history"].append({"user": message.content})
         memory[thread_id] = thread_memory
         save_json(MEMORY_FILE, memory)
+    await message.channel.send(f"Recorded company `{company_name}`. Add more companies or type **all done** to finalize.")
 
-# ------------------ AUTO-LOCK INACTIVE THREADS ------------------
+# AUTO-LOCK
 @tasks.loop(minutes=1)
 async def auto_lock_threads():
     async with status_lock:
@@ -349,20 +272,24 @@ async def auto_lock_threads():
             if now - last > timedelta(minutes=INACTIVITY_MINUTES):
                 thread = bot.get_channel(int(thread_id))
                 if thread:
-                    original_name = thread.name
-                    if not original_name.startswith("[CLOSED]"):
-                        await thread.edit(name=f"[CLOSED] {original_name}", locked=True)
-                    else:
-                        await thread.edit(locked=True)
+                    if not thread.name.startswith("[CLOSED]"):
+                        await thread.edit(name=f"[CLOSED] {thread.name}")
+                    await thread.edit(locked=True)
                 info["closed"] = True
         save_json(STATUS_FILE, status)
 
-# ------------------ BOT READY ------------------
+# DAILY CRYPTO UPDATE
+@tasks.loop(hours=24)
+async def daily_crypto_update():
+    await update_daily_crypto()
+
+# BOT READY
 @bot.event
 async def on_ready():
     auto_lock_threads.start()
-    print(f"{TELLER_NAME} online as {bot.user}")
+    daily_crypto_update.start()
+    print(f"{TELLER_NAME} v4.4 online as {bot.user}")
 
-# ------------------ START BOT ------------------
+# START BOT
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
