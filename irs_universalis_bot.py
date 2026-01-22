@@ -305,19 +305,19 @@ async def on_ready():
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
 MODE 1 DATA COLLECTION
-• Politely request missing required inputs.
-• Ask ONE question only.
-• Do not calculate.
+- Politely request missing required inputs.
+- Ask ONE question only.
+- Do not calculate.
 
 MODE 2 CONFIRMATION
-• Restate all collected inputs exactly.
-• Ask for explicit confirmation (Yes / No).
-• Do not calculate.
+- Restate all collected inputs exactly.
+- Ask for explicit confirmation (Yes / No).
+- Do not calculate.
 
 MODE 3 CALCULATION & REPORT
-• Show step-by-step calculations.
-• Present results as a formal financial report.
-• Do not add commentary beyond the report.
+- Show step-by-step calculations.
+- Present results as a formal financial report.
+- Do not add commentary beyond the report.
 
 OUTPUT STYLE:
 - Structured
