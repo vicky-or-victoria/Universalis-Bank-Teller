@@ -1,4 +1,4 @@
-# Universalis Bank Bot v4.1.4
+# Universalis Bank Bot v4.1.5
 
 import os
 import json
