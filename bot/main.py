@@ -14,22 +14,26 @@ intents.guilds = True
 
 
 class UniversalisBot(commands.Bot):
-    def __init__(self):
+    def __init__(self, owner_ids=None):
+        # ✅ Accept owner_ids here
         super().__init__(
             command_prefix="ub!",
             intents=intents,
             help_command=None,
-            owner_ids={795733380532404224},  # OWNER SET HERE
+            owner_ids=owner_ids,
         )
         self.db = None
 
     async def setup_hook(self):
         """Initialize database and load cogs"""
+        # Ensure data directory exists
         os.makedirs("data", exist_ok=True)
 
+        # Connect to database
         self.db = await aiosqlite.connect("data/universalis.db")
         await self.init_database()
 
+        # Load all cogs
         cogs = [
             "cogs.forum_responder",
             "cogs.financial_reports",
@@ -50,6 +54,7 @@ class UniversalisBot(commands.Bot):
         print("✓ Synced slash commands")
 
     async def init_database(self):
+        """Initialize database tables"""
         async with self.db.cursor() as cursor:
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS companies (
@@ -114,14 +119,12 @@ class UniversalisBot(commands.Bot):
             await self.db.commit()
 
     async def close(self):
+        """Cleanup on shutdown"""
         if self.db:
             await self.db.close()
         await super().close()
 
-bot = UniversalisBot(
-    owner_ids={795733380532404224},  # kept exactly as requested
-)
-
+bot = UniversalisBot(owner_ids={795733380532404224})
 
 @bot.event
 async def on_ready():
