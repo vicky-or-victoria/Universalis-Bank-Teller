@@ -142,3 +142,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+bot = UniversalisBot(
+    owner_ids={795733380532404224},
+)
