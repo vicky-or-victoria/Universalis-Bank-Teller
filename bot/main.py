@@ -33,6 +33,7 @@ class TradingBot(commands.Bot):
 
         # Load all cogs
         cogs = [
+            "cogs.francesca_control",
             "cogs.chatgpt_responder",
             "cogs.financial_reports",
             "cogs.stock_market",
