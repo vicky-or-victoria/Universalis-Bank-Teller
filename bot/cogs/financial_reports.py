@@ -12,7 +12,6 @@ class FinancialReports(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.api_key = os.getenv("OPENAI_API_KEY")
-        # Default to gpt-4o-mini if not specified
         self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         
         # Tax rate (can be adjusted by admins)
@@ -79,20 +78,18 @@ class FinancialReports(commands.Cog):
                 company_name = message.content.strip()
                 
                 # Check if company exists
-                async with self.bot.db.cursor() as cursor:
-                    await cursor.execute(
-                        "SELECT id FROM companies WHERE owner_id = ? AND name = ?",
-                        (user_id, company_name)
+                async with self.bot.db.acquire() as conn:
+                    company = await conn.fetchrow(
+                        "SELECT id FROM companies WHERE owner_id = $1 AND name = $2",
+                        user_id, company_name
                     )
-                    company = await cursor.fetchone()
                     
                     if not company:
                         # Create company
-                        await cursor.execute(
-                            "INSERT INTO companies (name, owner_id) VALUES (?, ?)",
-                            (company_name, user_id)
+                        await conn.execute(
+                            "INSERT INTO companies (name, owner_id) VALUES ($1, $2)",
+                            company_name, user_id
                         )
-                        await self.bot.db.commit()
                         await message.reply(f"✅ Company **{company_name}** has been registered!")
                 
                 session["company_name"] = company_name
@@ -150,7 +147,6 @@ class FinancialReports(commands.Cog):
             return  # Exit after handling active session
         
         # If no active session, check for trigger phrases to start filing
-        # Trigger phrases that indicate user wants to file a report
         file_triggers = [
             "file report", "file a report", "make a report", "create a report",
             "submit report", "submit a report", "i want to file", "id like to file",
@@ -223,32 +219,29 @@ class FinancialReports(commands.Cog):
         )
         
         # Update company balance
-        async with self.bot.db.cursor() as cursor:
-            await cursor.execute(
-                "SELECT id, balance FROM companies WHERE name = ? AND owner_id = ?",
-                (company_name, message.author.id)
+        async with self.bot.db.acquire() as conn:
+            company = await conn.fetchrow(
+                "SELECT id, balance FROM companies WHERE name = $1 AND owner_id = $2",
+                company_name, message.author.id
             )
-            company = await cursor.fetchone()
-            company_id = company[0]
-            old_balance = company[1]
+            company_id = company['id']
+            old_balance = float(company['balance'])
             new_balance = old_balance + net_profit
             
-            await cursor.execute(
-                "UPDATE companies SET balance = ? WHERE id = ?",
-                (new_balance, company_id)
+            await conn.execute(
+                "UPDATE companies SET balance = $1 WHERE id = $2",
+                new_balance, company_id
             )
             
             # Save report
             items_json = json.dumps(results)
-            await cursor.execute(
-                "INSERT INTO reports (company_id, items_sold, gross_profit, net_profit) VALUES (?, ?, ?, ?)",
-                (company_id, items_json, total_gross, net_profit)
+            await conn.execute(
+                "INSERT INTO reports (company_id, items_sold, gross_profit, net_profit) VALUES ($1, $2, $3, $4)",
+                company_id, items_json, total_gross, net_profit
             )
-            
-            await self.bot.db.commit()
         
         embed.add_field(
-            name="� Company Balance",
+            name="🏦 Company Balance",
             value=f"Previous: ${old_balance:,.2f}\n**New Balance:** ${new_balance:,.2f}",
             inline=False
         )
@@ -307,19 +300,17 @@ class FinancialReports(commands.Cog):
     @commands.hybrid_command(name="company_balance")
     async def company_balance(self, ctx, *, company_name: str = None):
         """Check your company's balance"""
-        async with self.bot.db.cursor() as cursor:
+        async with self.bot.db.acquire() as conn:
             if company_name:
-                await cursor.execute(
-                    "SELECT name, balance FROM companies WHERE owner_id = ? AND name = ?",
-                    (ctx.author.id, company_name)
+                companies = await conn.fetch(
+                    "SELECT name, balance FROM companies WHERE owner_id = $1 AND name = $2",
+                    ctx.author.id, company_name
                 )
             else:
-                await cursor.execute(
-                    "SELECT name, balance FROM companies WHERE owner_id = ?",
-                    (ctx.author.id,)
+                companies = await conn.fetch(
+                    "SELECT name, balance FROM companies WHERE owner_id = $1",
+                    ctx.author.id
                 )
-            
-            companies = await cursor.fetchall()
         
         if not companies:
             await ctx.send("❌ You don't own any companies!")
@@ -330,10 +321,10 @@ class FinancialReports(commands.Cog):
             color=discord.Color.gold()
         )
         
-        for name, balance in companies:
+        for row in companies:
             embed.add_field(
-                name=name,
-                value=f"Balance: **${balance:,.2f}**",
+                name=row['name'],
+                value=f"Balance: **${float(row['balance']):,.2f}**",
                 inline=False
             )
         
@@ -379,24 +370,22 @@ class FinancialReports(commands.Cog):
     @commands.hybrid_command(name="view_reports")
     async def view_reports(self, ctx, *, company_name: str):
         """View financial reports for your company"""
-        async with self.bot.db.cursor() as cursor:
-            await cursor.execute(
-                "SELECT id FROM companies WHERE owner_id = ? AND name = ?",
-                (ctx.author.id, company_name)
+        async with self.bot.db.acquire() as conn:
+            company = await conn.fetchrow(
+                "SELECT id FROM companies WHERE owner_id = $1 AND name = $2",
+                ctx.author.id, company_name
             )
-            company = await cursor.fetchone()
             
             if not company:
                 await ctx.send("❌ Company not found!")
                 return
             
-            company_id = company[0]
+            company_id = company['id']
             
-            await cursor.execute(
-                "SELECT items_sold, gross_profit, net_profit, reported_at FROM reports WHERE company_id = ? ORDER BY reported_at DESC LIMIT 5",
-                (company_id,)
+            reports = await conn.fetch(
+                "SELECT items_sold, gross_profit, net_profit, reported_at FROM reports WHERE company_id = $1 ORDER BY reported_at DESC LIMIT 5",
+                company_id
             )
-            reports = await cursor.fetchall()
         
         if not reports:
             await ctx.send("📋 No reports filed yet!")
@@ -407,15 +396,15 @@ class FinancialReports(commands.Cog):
             color=discord.Color.blue()
         )
         
-        for idx, (items_json, gross, net, timestamp) in enumerate(reports, 1):
-            items = json.loads(items_json)
+        for idx, row in enumerate(reports, 1):
+            items = json.loads(row['items_sold'])
             items_summary = ", ".join([f"{item['name']} (🎲{item['dice']})" for item in items[:3]])
             if len(items) > 3:
                 items_summary += f" +{len(items) - 3} more"
             
             embed.add_field(
                 name=f"Report #{idx}",
-                value=f"Items: {items_summary}\nGross: ${gross:,.2f}\nNet: ${net:,.2f}\n{timestamp}",
+                value=f"Items: {items_summary}\nGross: ${float(row['gross_profit']):,.2f}\nNet: ${float(row['net_profit']):,.2f}\n{row['reported_at']}",
                 inline=False
             )
         
