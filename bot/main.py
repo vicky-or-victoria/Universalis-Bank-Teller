@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands
-import aiosqlite
+import asyncpg
 import os
 import asyncio
 from dotenv import load_dotenv
@@ -25,10 +25,24 @@ class TradingBot(commands.Bot):
 
     async def setup_hook(self):
         """Initialize database and load cogs"""
-        os.makedirs("data", exist_ok=True)
-
-        # Connect to database
-        self.db = await aiosqlite.connect("data/trading_bot.db")
+        # Connect to PostgreSQL database
+        database_url = os.getenv("DATABASE_URL")
+        
+        if not database_url:
+            print("❌ DATABASE_URL not found in environment variables!")
+            return
+        
+        # Fix for some platforms that use postgres:// instead of postgresql://
+        if database_url.startswith("postgres://"):
+            database_url = database_url.replace("postgres://", "postgresql://", 1)
+        
+        try:
+            self.db = await asyncpg.create_pool(database_url)
+            print("✓ Connected to PostgreSQL database")
+        except Exception as e:
+            print(f"❌ Failed to connect to database: {e}")
+            return
+        
         await self.init_database()
 
         # Load all cogs
@@ -36,7 +50,7 @@ class TradingBot(commands.Bot):
             "cogs.chatgpt_responder",
             "cogs.financial_reports",
             "cogs.stock_market",
-            "cogs.francesca_control",  # Add this
+            "cogs.francesca_control",
         ]
 
         for cog in cogs:
@@ -52,39 +66,39 @@ class TradingBot(commands.Bot):
 
     async def init_database(self):
         """Initialize database tables"""
-        async with self.db.cursor() as cursor:
+        async with self.db.acquire() as conn:
             # Companies table
-            await cursor.execute("""
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS companies (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
-                    owner_id INTEGER NOT NULL,
-                    balance REAL DEFAULT 0,
-                    is_public BOOLEAN DEFAULT 0,
+                    owner_id BIGINT NOT NULL,
+                    balance DECIMAL(15, 2) DEFAULT 0,
+                    is_public BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
             # Financial reports table
-            await cursor.execute("""
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS reports (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     company_id INTEGER NOT NULL,
                     items_sold TEXT NOT NULL,
-                    gross_profit REAL NOT NULL,
-                    net_profit REAL NOT NULL,
+                    gross_profit DECIMAL(15, 2) NOT NULL,
+                    net_profit DECIMAL(15, 2) NOT NULL,
                     reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (company_id) REFERENCES companies(id)
                 )
             """)
 
             # Stocks table
-            await cursor.execute("""
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS stocks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     company_id INTEGER NOT NULL,
                     ticker TEXT UNIQUE NOT NULL,
-                    price REAL NOT NULL,
+                    price DECIMAL(15, 2) NOT NULL,
                     available_shares INTEGER NOT NULL,
                     total_shares INTEGER NOT NULL,
                     FOREIGN KEY (company_id) REFERENCES companies(id)
@@ -92,10 +106,10 @@ class TradingBot(commands.Bot):
             """)
 
             # Holdings table
-            await cursor.execute("""
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS holdings (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
                     stock_id INTEGER NOT NULL,
                     shares INTEGER NOT NULL,
                     FOREIGN KEY (stock_id) REFERENCES stocks(id),
@@ -104,14 +118,14 @@ class TradingBot(commands.Bot):
             """)
 
             # Users table
-            await cursor.execute("""
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    balance REAL DEFAULT 50000
+                    user_id BIGINT PRIMARY KEY,
+                    balance DECIMAL(15, 2) DEFAULT 50000
                 )
             """)
-
-            await self.db.commit()
+            
+            print("✓ Database tables initialized")
 
     async def close(self):
         """Cleanup on shutdown"""
