@@ -16,7 +16,7 @@ class FinancialReports(commands.Cog):
         self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         
         # Tax rate (can be adjusted by admins)
-        self.tax_rate = 0.15  # 15% default
+        self.tax_rate = 0.25  # 25% default
         
         # Active report sessions (user_id -> session_data)
         self.active_sessions = {}
@@ -35,7 +35,7 @@ class FinancialReports(commands.Cog):
         payload = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": 300,
+            "max_tokens": 500,
             "temperature": 0.7
         }
         
