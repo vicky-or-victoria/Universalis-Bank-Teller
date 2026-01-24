@@ -129,8 +129,14 @@ Remember: You're here to help and chat, not just recite commands!"""
         if not (in_responder_channel or in_forum_thread):
             return
         
-        # Respond to everything, not just non-commands
-        # This allows natural conversation
+        # CHECK: Don't respond if user has an active report session
+        financial_reports_cog = self.bot.get_cog("FinancialReports")
+        if financial_reports_cog and message.author.id in financial_reports_cog.active_sessions:
+            return  # Let FinancialReports handle it
+        
+        # Don't respond to commands
+        if message.content.startswith("!"):
+            return
         
         async with message.channel.typing():
             # Get conversation history
