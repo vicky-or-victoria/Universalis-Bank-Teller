@@ -134,6 +134,11 @@ Remember: You're here to help and chat, not just recite commands!"""
         if financial_reports_cog and message.author.id in financial_reports_cog.active_sessions:
             return  # Let FinancialReports handle it
         
+        # CHECK: Don't respond if user has paused Francesca
+        francesca_control_cog = self.bot.get_cog("FrancescaControl")
+        if francesca_control_cog and francesca_control_cog.is_user_paused(message.author.id):
+            return  # User has paused responses
+        
         # Don't respond to commands
         if message.content.startswith("!"):
             return
