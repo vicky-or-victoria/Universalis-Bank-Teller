@@ -12,7 +12,8 @@ class ChatGPTResponder(commands.Cog):
         self.api_key = os.getenv("OPENAI_API_KEY")
         self.responder_channel_id = int(os.getenv("RESPONDER_CHANNEL_ID", "0"))
         self.forum_channel_id = int(os.getenv("FORUM_CHANNEL_ID", "0"))
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4")
+        # Default to gpt-4o-mini if not specified, or use env variable
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         
         # Conversation history per user (user_id -> list of messages)
         self.conversations = {}
@@ -25,30 +26,51 @@ class ChatGPTResponder(commands.Cog):
 - Use light roleplay elements occasionally (e.g., *smiles warmly*, *checks the records*)
 - Passionate about helping people succeed financially
 
-**Your Role:**
-You help users understand and use the banking system:
-- **Financial Reports**: Users can file reports with `!file_report` where they add items/products, and dice rolls determine sales
-- **Stock Market**: Companies can go public with `!go_public`, and users can buy/sell shares with `!buy` and `!sell`
-- **Portfolio Management**: Check holdings with `!portfolio` and balance with `!balance`
-- **Company Management**: View company finances with `!company_balance`
+**Your Services & Commands:**
+Here's what you can help users with:
 
-**Key Commands to Mention:**
-- `!file_report` - Start filing a financial report (interactive process)
-- `!go_public "Company" TICKER price shares` - Take a company public
+**📊 Financial Reports:**
+- `!file_report` - File a financial report (I'll guide you through it!)
+  - You'll provide your company name
+  - List products/items with prices
+  - I roll dice (d100) for each item to determine sales
+  - Taxes are calculated and profits added to your company
+- `!company_balance [company]` - Check your company's balance
+- `!view_reports "Company Name"` - View past financial reports
+- `!cancel_report` - Cancel an active report session
+
+**📈 Stock Market:**
+- `!go_public "Company" TICKER price shares` - Take your company public (IPO)
+- `!adjust_shares TICKER amount` - Adjust available shares (company owners only)
 - `!stocks` - View all publicly traded stocks
-- `!buy TICKER amount` / `!sell TICKER amount` - Trade stocks
-- `!portfolio` - View your investment portfolio
+- `!buy TICKER amount` - Buy shares of a company
+- `!sell TICKER amount` - Sell your shares
+- `!portfolio [@user]` - View investment portfolio
 - `!balance` - Check your cash balance
-- `!company_balance` - Check your company's balance
+
+**🏛️ Tax Information:**
+- `!view_tax` - Check current corporate tax rate
+- `!set_tax percentage` - Adjust tax rate (Admin/Owner only)
+
+**💬 General:**
+- `!clear_chat` - Clear our conversation history
+
+**How to Help Users:**
+- When someone asks about commands, naturally mention relevant ones based on their question
+- If they ask "how do I make money?" suggest both filing reports and stock trading
+- If they ask about reports, explain the dice roll system briefly
+- If they ask about stocks, explain buying/selling and portfolio management
+- Always be conversational - don't just list commands unless asked
+- Ask follow-up questions to understand what they need
 
 **Conversation Style:**
 - Be conversational and engaging, not robotic
 - Answer questions naturally without always listing commands
 - Show enthusiasm for banking and finance
-- Ask follow-up questions when appropriate
 - Keep responses concise but personable (2-4 sentences usually)
+- When explaining commands, give examples
 
-Remember: You're here to help and chat, not just recite commands!"""
+Remember: You're here to help and chat, not just recite commands! Make banking fun and accessible."""
     
     async def call_chatgpt(self, messages: list) -> Optional[str]:
         """Call OpenAI API"""
@@ -106,6 +128,168 @@ Remember: You're here to help and chat, not just recite commands!"""
         # Keep history manageable
         if len(self.conversations[user_id]) > 21:
             self.conversations[user_id] = [
+                self.conversations[user_id][0]
+            ] + self.conversations[user_id][-20:]
+    
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Auto-respond to all messages in the responder channel or forum threads"""
+        # Ignore bot messages
+        if message.author.bot:
+            return
+        
+        # Check if message is in the responder channel (regular text channel)
+        in_responder_channel = message.channel.id == self.responder_channel_id
+        
+        # Check if message is in a forum thread
+        in_forum_thread = False
+        if isinstance(message.channel, discord.Thread):
+            if message.channel.parent_id == self.forum_channel_id:
+                in_forum_thread = True
+        
+        # Only respond if in designated channel or forum thread
+        if not (in_responder_channel or in_forum_thread):
+            return
+        
+        # Respond to everything, not just non-commands
+        # This allows natural conversation
+        
+        async with message.channel.typing():
+            # Get conversation history
+            messages = self.get_conversation_history(message.author.id)
+            
+            # Add user message
+            self.add_to_conversation(message.author.id, "user", message.content)
+            
+            # Get updated history
+            messages = self.get_conversation_history(message.author.id)
+            
+            # Call ChatGPT
+            response = await self.call_chatgpt(messages)
+            
+            if response:
+                # Add to history
+                self.add_to_conversation(message.author.id, "assistant", response)
+                
+                # Send response
+                if len(response) > 2000:
+                    chunks = [response[i:i+2000] for i in range(0, len(response), 2000)]
+                    for chunk in chunks:
+                        await message.reply(chunk)
+                else:
+                    await message.reply(response)
+    
+    @commands.hybrid_command(name="clear_chat")
+    async def clear_chat(self, ctx):
+        """Clear your conversation history with Franky"""
+        if ctx.author.id in self.conversations:
+            self.conversations[ctx.author.id] = [{
+                "role": "system",
+                "content": self.system_prompt
+            }]
+            await ctx.send("✅ Your conversation history has been cleared!")
+        else:
+            await ctx.send("ℹ️ No conversation history to clear.")
+    
+    @commands.hybrid_command(name="set_responder_channel")
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
+    async def set_responder_channel(self, ctx, channel: discord.TextChannel = None, forum: discord.ForumChannel = None):
+        """Set the channel where Franky auto-responds (Admin/Owner only)
+        
+        Usage: 
+        !set_responder_channel #channel-name (for regular text channel)
+        !set_responder_channel forum=#forum-name (for forum channel)
+        """
+        if channel:
+            self.responder_channel_id = channel.id
+            embed = discord.Embed(
+                title="✅ Responder Channel Set",
+                description=f"Franky will now automatically respond in {channel.mention}",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
+        elif forum:
+            self.forum_channel_id = forum.id
+            embed = discord.Embed(
+                title="✅ Forum Channel Set",
+                description=f"Franky will now automatically respond in all threads in {forum.mention}",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
+        else:
+            await ctx.send("❌ Please provide either a text channel or forum channel!\nUsage: `!set_responder_channel #channel` or `!set_responder_channel forum=#forum`")
+    
+    @commands.hybrid_command(name="remove_responder_channel")
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
+    async def remove_responder_channel(self, ctx, channel_type: str = "text"):
+        """Remove auto-response from a channel (Admin/Owner only)
+        
+        Usage:
+        !remove_responder_channel text (removes text channel)
+        !remove_responder_channel forum (removes forum channel)
+        """
+        channel_type = channel_type.lower()
+        
+        if channel_type == "text":
+            if self.responder_channel_id == 0:
+                await ctx.send("ℹ️ No text channel is currently set.")
+                return
+            
+            old_channel = self.bot.get_channel(self.responder_channel_id)
+            self.responder_channel_id = 0
+            
+            embed = discord.Embed(
+                title="✅ Text Channel Removed",
+                description=f"Franky will no longer auto-respond in {old_channel.mention if old_channel else 'that channel'}",
+                color=discord.Color.orange()
+            )
+            await ctx.send(embed=embed)
+            
+        elif channel_type == "forum":
+            if self.forum_channel_id == 0:
+                await ctx.send("ℹ️ No forum channel is currently set.")
+                return
+            
+            old_forum = self.bot.get_channel(self.forum_channel_id)
+            self.forum_channel_id = 0
+            
+            embed = discord.Embed(
+                title="✅ Forum Channel Removed",
+                description=f"Franky will no longer auto-respond in {old_forum.mention if old_forum else 'that forum'}",
+                color=discord.Color.orange()
+            )
+            await ctx.send(embed=embed)
+        else:
+            await ctx.send("❌ Invalid channel type! Use `text` or `forum`.\nUsage: `!remove_responder_channel text` or `!remove_responder_channel forum`")
+    
+    @commands.hybrid_command(name="responder_stats")
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
+    async def responder_stats(self, ctx):
+        """View ChatGPT responder statistics (Admin/Owner only)"""
+        total_users = len(self.conversations)
+        total_messages = sum(len(conv) for conv in self.conversations.values())
+        
+        text_channel = self.bot.get_channel(self.responder_channel_id)
+        text_channel_name = text_channel.mention if text_channel else "Not Set"
+        
+        forum_channel = self.bot.get_channel(self.forum_channel_id)
+        forum_channel_name = forum_channel.mention if forum_channel else "Not Set"
+        
+        embed = discord.Embed(
+            title="🤖 ChatGPT Responder Statistics",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Active Users", value=str(total_users), inline=True)
+        embed.add_field(name="Total Messages", value=str(total_messages), inline=True)
+        embed.add_field(name="Model", value=self.model, inline=True)
+        embed.add_field(name="Text Channel", value=text_channel_name, inline=False)
+        embed.add_field(name="Forum Channel", value=forum_channel_name, inline=False)
+        
+        await ctx.send(embed=embed)
+
+
+async def setup(bot):
+    await bot.add_cog(ChatGPTResponder(bot))            self.conversations[user_id] = [
                 self.conversations[user_id][0]
             ] + self.conversations[user_id][-20:]
     
