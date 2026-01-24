@@ -33,10 +33,10 @@ class TradingBot(commands.Bot):
 
         # Load all cogs
         cogs = [
-            "cogs.francesca_control",
             "cogs.chatgpt_responder",
             "cogs.financial_reports",
             "cogs.stock_market",
+            "cogs.francesca_control",  # Add this
         ]
 
         for cog in cogs:
@@ -121,7 +121,7 @@ class TradingBot(commands.Bot):
 
 
 # Replace this with your Discord user ID
-bot = TradingBot(owner_ids={795733380532404224})
+bot = TradingBot(owner_ids={YOUR_DISCORD_ID_HERE})
 
 
 @bot.event
