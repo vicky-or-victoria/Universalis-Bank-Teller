@@ -47,7 +47,7 @@ You help users understand and use the banking system:
 - Ask follow-up questions when appropriate
 - Keep responses concise but personable (2-4 sentences usually)
 
-Remember: You're here to help and chat, not just recite commands!
+Remember: You're here to help and chat, not just recite commands!"""
     
     async def call_chatgpt(self, messages: list) -> Optional[str]:
         """Call OpenAI API"""
@@ -192,7 +192,5 @@ Remember: You're here to help and chat, not just recite commands!
         embed.add_field(name="Responder Channel", value=channel_name, inline=False)
         
         await ctx.send(embed=embed)
-
-
 async def setup(bot):
     await bot.add_cog(ChatGPTResponder(bot))
