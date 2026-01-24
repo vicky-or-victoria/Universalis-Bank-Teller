@@ -12,7 +12,8 @@ class ChatGPTResponder(commands.Cog):
         self.api_key = os.getenv("OPENAI_API_KEY")
         self.responder_channel_id = int(os.getenv("RESPONDER_CHANNEL_ID", "0"))
         self.forum_channel_id = int(os.getenv("FORUM_CHANNEL_ID", "0"))
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4")
+        # Default to gpt-4o-mini if not specified, or use env variable
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         
         # Conversation history per user (user_id -> list of messages)
         self.conversations = {}
@@ -25,30 +26,64 @@ class ChatGPTResponder(commands.Cog):
 - Use light roleplay elements occasionally (e.g., *smiles warmly*, *checks the records*)
 - Passionate about helping people succeed financially
 
-**Your Role:**
-You help users understand and use the banking system:
-- **Financial Reports**: Users can file reports with `!file_report` where they add items/products, and dice rolls determine sales
-- **Stock Market**: Companies can go public with `!go_public`, and users can buy/sell shares with `!buy` and `!sell`
-- **Portfolio Management**: Check holdings with `!portfolio` and balance with `!balance`
-- **Company Management**: View company finances with `!company_balance`
+**Your Services & Commands:**
+Here's what you can help users with:
 
-**Key Commands to Mention:**
-- `!file_report` - Start filing a financial report (interactive process)
-- `!go_public "Company" TICKER price shares` - Take a company public
+**📊 Financial Reports:**
+- `!file_report` - File a financial report (I'll guide you through it!)
+  - IMPORTANT: When users want to file a report, tell them to use `!file_report`
+  - DO NOT try to collect report information yourself in chat
+  - The file_report command will start an interactive session in that specific channel
+  - Reports are channel-specific - you can chat elsewhere while a report is active
+- `!report_status` - Check your active report session location
+- `!company_balance [company]` - Check your company's balance
+- `!view_reports "Company Name"` - View past financial reports
+- `!cancel_report` - Cancel an active report session
+
+**📈 Stock Market:**
+- `!go_public "Company" TICKER price shares` - Take your company public (IPO)
+- `!adjust_shares TICKER amount` - Adjust available shares (company owners only)
 - `!stocks` - View all publicly traded stocks
-- `!buy TICKER amount` / `!sell TICKER amount` - Trade stocks
-- `!portfolio` - View your investment portfolio
+- `!buy TICKER amount` - Buy shares of a company
+- `!sell TICKER amount` - Sell your shares
+- `!portfolio [@user]` - View investment portfolio
 - `!balance` - Check your cash balance
-- `!company_balance` - Check your company's balance
+- `!transfer_money @user amount` - Transfer money to another user
+
+**🏛️ Tax Information:**
+- `!view_tax` - Check current corporate tax rate
+- `!set_tax percentage` - Adjust tax rate (Admin/Owner only)
+
+**⚙️ Admin/Owner Commands:**
+- `!give_money @user amount` - Give money to a user
+- `!remove_money @user amount` - Remove money from a user
+- `!set_stock_price TICKER price` - Manually set a stock's price
+- `!delist_company TICKER` - Remove a company from the stock market
+- `!fluctuate` - Manually trigger stock price fluctuation
+
+**💬 General:**
+- `!clear_chat` - Clear our conversation history
+- Say "Thanks Francesca" to pause my responses
+- Say "Hey Francesca" to resume my responses
+- Say "Close Francesca" to close a thread (with proper role)
+
+**How to Help Users:**
+- When someone asks about filing reports, direct them to use `!file_report`
+- NEVER try to collect company names, items, or prices in regular chat
+- If they ask "how do I make money?" suggest both `!file_report` and stock trading
+- If they ask about reports, explain the dice roll system and tell them to use `!file_report`
+- If they ask about stocks, explain buying/selling and portfolio management
+- Always be conversational - don't just list commands unless asked
+- Ask follow-up questions to understand what they need
 
 **Conversation Style:**
 - Be conversational and engaging, not robotic
 - Answer questions naturally without always listing commands
 - Show enthusiasm for banking and finance
-- Ask follow-up questions when appropriate
 - Keep responses concise but personable (2-4 sentences usually)
+- When explaining commands, give examples
 
-Remember: You're here to help and chat, not just recite commands!"""
+Remember: You're here to help and chat, not just recite commands! Make banking fun and accessible. DON'T try to handle financial reports yourself - always direct users to `!file_report` command."""
     
     async def call_chatgpt(self, messages: list) -> Optional[str]:
         """Call OpenAI API"""
@@ -129,12 +164,23 @@ Remember: You're here to help and chat, not just recite commands!"""
         if not (in_responder_channel or in_forum_thread):
             return
         
-        # CHECK: Don't respond if user has an active report session
+        # CHECK 1: Don't respond to control phrases (handled by FrancescaControl)
+        content_lower = message.content.strip().lower()
+        if any(phrase in content_lower for phrase in [
+            "thanks francesca", "thank you francesca",
+            "hey francesca", "hi francesca", "hello francesca",
+            "close francesca"
+        ]):
+            return  # Let FrancescaControl handle it
+        
+        # CHECK 2: Don't respond if user has an active report session IN THIS CHANNEL
         financial_reports_cog = self.bot.get_cog("FinancialReports")
         if financial_reports_cog and message.author.id in financial_reports_cog.active_sessions:
-            return  # Let FinancialReports handle it
+            session = financial_reports_cog.active_sessions[message.author.id]
+            if message.channel.id == session.get("channel_id"):
+                return  # Let FinancialReports handle it in this channel
         
-        # CHECK: Don't respond if user has paused Francesca
+        # CHECK 3: Don't respond if user has paused Francesca
         francesca_control_cog = self.bot.get_cog("FrancescaControl")
         if francesca_control_cog and francesca_control_cog.is_user_paused(message.author.id):
             return  # User has paused responses
@@ -180,33 +226,67 @@ Remember: You're here to help and chat, not just recite commands!"""
         else:
             await ctx.send("ℹ️ No conversation history to clear.")
     
-    @commands.hybrid_command(name="set_responder_channel")
+    @commands.hybrid_command(name="set_text_responder")
     @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
-    async def set_responder_channel(self, ctx, channel: discord.TextChannel = None, forum: discord.ForumChannel = None):
-        """Set the channel where Franky auto-responds (Admin/Owner only)
+    async def set_text_responder(self, ctx, channel: discord.TextChannel):
+        """Set a text channel where Franky auto-responds (Admin/Owner only)"""
+        self.responder_channel_id = channel.id
         
-        Usage: 
-        !set_responder_channel #channel-name (for regular text channel)
-        !set_responder_channel forum=#forum-name (for forum channel)
-        """
-        if channel:
-            self.responder_channel_id = channel.id
-            embed = discord.Embed(
-                title="✅ Responder Channel Set",
-                description=f"Franky will now automatically respond in {channel.mention}",
-                color=discord.Color.green()
-            )
-            await ctx.send(embed=embed)
-        elif forum:
-            self.forum_channel_id = forum.id
-            embed = discord.Embed(
-                title="✅ Forum Channel Set",
-                description=f"Franky will now automatically respond in all threads in {forum.mention}",
-                color=discord.Color.green()
-            )
-            await ctx.send(embed=embed)
-        else:
-            await ctx.send("❌ Please provide either a text channel or forum channel!\nUsage: `!set_responder_channel #channel` or `!set_responder_channel forum=#forum`")
+        embed = discord.Embed(
+            title="✅ Text Responder Channel Set",
+            description=f"Franky will now automatically respond in {channel.mention}",
+            color=discord.Color.green()
+        )
+        await ctx.send(embed=embed)
+    
+    @commands.hybrid_command(name="set_forum_responder")
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
+    async def set_forum_responder(self, ctx, forum: discord.ForumChannel):
+        """Set a forum channel where Franky auto-responds in threads (Admin/Owner only)"""
+        self.forum_channel_id = forum.id
+        
+        embed = discord.Embed(
+            title="✅ Forum Responder Channel Set",
+            description=f"Franky will now automatically respond in all threads in {forum.mention}",
+            color=discord.Color.green()
+        )
+        await ctx.send(embed=embed)
+    
+    @commands.hybrid_command(name="remove_text_responder")
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
+    async def remove_text_responder(self, ctx):
+        """Remove text channel auto-response (Admin/Owner only)"""
+        if self.responder_channel_id == 0:
+            await ctx.send("ℹ️ No text channel is currently set.")
+            return
+        
+        old_channel = self.bot.get_channel(self.responder_channel_id)
+        self.responder_channel_id = 0
+        
+        embed = discord.Embed(
+            title="✅ Text Responder Removed",
+            description=f"Franky will no longer auto-respond in {old_channel.mention if old_channel else 'that channel'}",
+            color=discord.Color.orange()
+        )
+        await ctx.send(embed=embed)
+    
+    @commands.hybrid_command(name="remove_forum_responder")
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
+    async def remove_forum_responder(self, ctx):
+        """Remove forum channel auto-response (Admin/Owner only)"""
+        if self.forum_channel_id == 0:
+            await ctx.send("ℹ️ No forum channel is currently set.")
+            return
+        
+        old_forum = self.bot.get_channel(self.forum_channel_id)
+        self.forum_channel_id = 0
+        
+        embed = discord.Embed(
+            title="✅ Forum Responder Removed",
+            description=f"Franky will no longer auto-respond in {old_forum.mention if old_forum else 'that forum'}",
+            color=discord.Color.orange()
+        )
+        await ctx.send(embed=embed)
     
     @commands.hybrid_command(name="responder_stats")
     @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
