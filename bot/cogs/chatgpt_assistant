@@ -201,7 +201,7 @@ You help customers with:
             await ctx.send("⚠️ This command only works in forum threads.")
     
     @commands.hybrid_command(name="set_ai_personality")
-    @commands.has_permissions(administrator=True)
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
     async def set_personality(self, ctx, *, personality: str):
         """Change the AI assistant's personality (Admin only)
         
@@ -220,7 +220,7 @@ You help customers with:
         await ctx.send(embed=embed)
     
     @commands.hybrid_command(name="ai_stats")
-    @commands.has_permissions(administrator=True)
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
     async def ai_stats(self, ctx):
         """View ChatGPT usage statistics (Admin only)"""
         total_conversations = len(self.conversations)
