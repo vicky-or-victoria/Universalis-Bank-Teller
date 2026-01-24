@@ -50,131 +50,134 @@ class FinancialReports(commands.Cog):
         
         return None
     
-    @commands.hybrid_command(name="file_report")
-    async def file_report(self, ctx):
-        """Start filing a financial report with Franky's assistance"""
-        # Check if user already has an active session
-        if ctx.author.id in self.active_sessions:
-            await ctx.send("⚠️ You already have an active report session! Use `!cancel_report` to cancel it.")
-            return
-        
-        # Initialize session
-        self.active_sessions[ctx.author.id] = {
-            "step": "company_name",
-            "company_name": None,
-            "items": [],
-            "channel_id": ctx.channel.id  # Track which channel the session is in
-        }
-        
-        # ChatGPT greeting
-        messages = [{
-            "role": "system",
-            "content": "You are Francesca (Franky), a friendly bank teller helping a customer file their financial report. Be warm and professional."
-        }, {
-            "role": "user",
-            "content": "I want to file a financial report"
-        }]
-        
-        response = await self.call_chatgpt(messages)
-        
-        if response:
-            await ctx.send(f"{response}\n\n**Please provide your company name:**")
-        else:
-            await ctx.send("**Please provide your company name:**")
-    
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Handle report filing conversation"""
+        """Handle report filing conversation and trigger phrases"""
         if message.author.bot:
             return
         
-        if message.content.startswith("!"):
-            return
-        
+        content_lower = message.content.strip().lower()
         user_id = message.author.id
         
         # Check if user has an active session
-        if user_id not in self.active_sessions:
-            return
+        has_active_session = user_id in self.active_sessions
         
-        session = self.active_sessions[user_id]
-        
-        # IMPORTANT: Only respond in the channel where the session started
-        if message.channel.id != session["channel_id"]:
-            return  # Ignore messages in other channels
-        
-        # Step 1: Get company name
-        if session["step"] == "company_name":
-            company_name = message.content.strip()
+        # If they have an active session, handle it
+        if has_active_session:
+            session = self.active_sessions[user_id]
             
-            # Check if company exists
-            async with self.bot.db.cursor() as cursor:
-                await cursor.execute(
-                    "SELECT id FROM companies WHERE owner_id = ? AND name = ?",
-                    (user_id, company_name)
-                )
-                company = await cursor.fetchone()
+            # IMPORTANT: Only respond in the channel where the session started
+            if message.channel.id != session["channel_id"]:
+                return  # Ignore messages in other channels
+            
+            # Don't process commands
+            if message.content.startswith("!"):
+                return
+            
+            # Step 1: Get company name
+            if session["step"] == "company_name":
+                company_name = message.content.strip()
                 
-                if not company:
-                    # Create company
+                # Check if company exists
+                async with self.bot.db.cursor() as cursor:
                     await cursor.execute(
-                        "INSERT INTO companies (name, owner_id) VALUES (?, ?)",
-                        (company_name, user_id)
+                        "SELECT id FROM companies WHERE owner_id = ? AND name = ?",
+                        (user_id, company_name)
                     )
-                    await self.bot.db.commit()
-                    await message.reply(f"✅ Company **{company_name}** has been registered!")
+                    company = await cursor.fetchone()
+                    
+                    if not company:
+                        # Create company
+                        await cursor.execute(
+                            "INSERT INTO companies (name, owner_id) VALUES (?, ?)",
+                            (company_name, user_id)
+                        )
+                        await self.bot.db.commit()
+                        await message.reply(f"✅ Company **{company_name}** has been registered!")
+                
+                session["company_name"] = company_name
+                session["step"] = "items"
+                
+                await message.reply(
+                    "**Now, let's add your products/items:**\n"
+                    "Format: `Item Name | Price per unit`\n"
+                    "Example: `Widget | 50` or `Premium Service | 120`\n\n"
+                    "Type `done` when you've added all items."
+                )
             
-            session["company_name"] = company_name
-            session["step"] = "items"
+            # Step 2: Collect items
+            elif session["step"] == "items":
+                content = message.content.strip().lower()
+                
+                if content == "done":
+                    if len(session["items"]) == 0:
+                        await message.reply("⚠️ You need to add at least one item! Format: `Item Name | Price`")
+                        return
+                    
+                    # Process the report
+                    await self.process_report(message, session)
+                    del self.active_sessions[user_id]
+                else:
+                    # Parse item
+                    if "|" not in message.content:
+                        await message.reply("⚠️ Invalid format! Use: `Item Name | Price`")
+                        return
+                    
+                    parts = message.content.split("|")
+                    if len(parts) != 2:
+                        await message.reply("⚠️ Invalid format! Use: `Item Name | Price`")
+                        return
+                    
+                    item_name = parts[0].strip()
+                    try:
+                        price = float(parts[1].strip())
+                    except ValueError:
+                        await message.reply("⚠️ Price must be a number!")
+                        return
+                    
+                    if price <= 0:
+                        await message.reply("⚠️ Price must be positive!")
+                        return
+                    
+                    session["items"].append({
+                        "name": item_name,
+                        "price": price
+                    })
+                    
+                    await message.add_reaction("✅")
+                    await message.reply(f"Added **{item_name}** at **${price:.2f}** per unit. Add more or type `done`.")
             
-            await message.reply(
-                "**Now, let's add your products/items:**\n"
-                "Format: `Item Name | Price per unit`\n"
-                "Example: `Widget | 50` or `Premium Service | 120`\n\n"
-                "Type `done` when you've added all items."
-            )
+            return  # Exit after handling active session
         
-        # Step 2: Collect items
-        elif session["step"] == "items":
-            content = message.content.strip().lower()
+        # If no active session, check for trigger phrases to start filing
+        # Trigger phrases that indicate user wants to file a report
+        file_triggers = [
+            "file report", "file a report", "make a report", "create a report",
+            "submit report", "submit a report", "i want to file", "id like to file",
+            "file my report", "start a report", "new report"
+        ]
+        
+        # Check if message contains any trigger phrase
+        should_start_filing = any(trigger in content_lower for trigger in file_triggers)
+        
+        if should_start_filing:
+            # Don't start if it's a command
+            if message.content.startswith("!"):
+                return
             
-            if content == "done":
-                if len(session["items"]) == 0:
-                    await message.reply("⚠️ You need to add at least one item! Format: `Item Name | Price`")
-                    return
-                
-                # Process the report
-                await self.process_report(message, session)
-                del self.active_sessions[user_id]
-            else:
-                # Parse item
-                if "|" not in message.content:
-                    await message.reply("⚠️ Invalid format! Use: `Item Name | Price`")
-                    return
-                
-                parts = message.content.split("|")
-                if len(parts) != 2:
-                    await message.reply("⚠️ Invalid format! Use: `Item Name | Price`")
-                    return
-                
-                item_name = parts[0].strip()
-                try:
-                    price = float(parts[1].strip())
-                except ValueError:
-                    await message.reply("⚠️ Price must be a number!")
-                    return
-                
-                if price <= 0:
-                    await message.reply("⚠️ Price must be positive!")
-                    return
-                
-                session["items"].append({
-                    "name": item_name,
-                    "price": price
-                })
-                
-                await message.add_reaction("✅")
-                await message.reply(f"Added **{item_name}** at **${price:.2f}** per unit. Add more or type `done`.")
+            # Initialize session
+            self.active_sessions[user_id] = {
+                "step": "company_name",
+                "company_name": None,
+                "items": [],
+                "channel_id": message.channel.id
+            }
+            
+            # Friendly greeting without ChatGPT
+            await message.reply(
+                "*smiles warmly* Of course! I'd be happy to help you file your financial report!\n\n"
+                "**Please provide your company name:**"
+            )
     
     async def process_report(self, message: discord.Message, session: dict):
         """Process the financial report with dice rolls"""
@@ -245,7 +248,7 @@ class FinancialReports(commands.Cog):
             await self.bot.db.commit()
         
         embed.add_field(
-            name="🏦 Company Balance",
+            name="� Company Balance",
             value=f"Previous: ${old_balance:,.2f}\n**New Balance:** ${new_balance:,.2f}",
             inline=False
         )
@@ -253,7 +256,7 @@ class FinancialReports(commands.Cog):
         # ChatGPT commentary
         messages = [{
             "role": "system",
-            "content": "You are Francesca (Franky), a friendly bank teller. Provide a brief, encouraging comment on the financial report results."
+            "content": "You are Francesca (Franky), a friendly bank teller. Provide a brief, encouraging comment on the financial report results in 1-2 sentences."
         }, {
             "role": "user",
             "content": f"The report shows a net profit of ${net_profit:,.2f}. Give a brief congratulatory or encouraging message."
@@ -261,7 +264,7 @@ class FinancialReports(commands.Cog):
         
         commentary = await self.call_chatgpt(messages)
         if commentary:
-            embed.set_footer(text=f"Franky says: {commentary}")
+            embed.set_footer(text=f"💬 Franky: {commentary}")
         
         await message.reply(embed=embed)
     
