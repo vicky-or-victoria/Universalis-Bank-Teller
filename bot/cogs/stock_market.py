@@ -15,25 +15,28 @@ class StockMarket(commands.Cog):
     
     async def get_user_balance(self, user_id: int) -> float:
         """Get or create user balance"""
-        async with self.bot.db.acquire() as conn:
-            row = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
+        async with self.bot.db.cursor() as cursor:
+            await cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
+            row = await cursor.fetchone()
             
             if not row:
-                await conn.execute(
-                    "INSERT INTO users (user_id, balance) VALUES ($1, $2)",
-                    user_id, 50000
+                await cursor.execute(
+                    "INSERT INTO users (user_id, balance) VALUES (?, ?)",
+                    (user_id, 50000)
                 )
+                await self.bot.db.commit()
                 return 50000.0
             
-            return float(row['balance'])
+            return row[0]
     
     async def update_user_balance(self, user_id: int, amount: float):
         """Update user balance"""
-        async with self.bot.db.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
-                amount, user_id
+        async with self.bot.db.cursor() as cursor:
+            await cursor.execute(
+                "UPDATE users SET balance = balance + ? WHERE user_id = ?",
+                (amount, user_id)
             )
+            await self.bot.db.commit()
     
     @commands.hybrid_command(name="go_public")
     async def go_public(self, ctx, company_name: str, ticker: str, price: float, shares: int):
@@ -51,40 +54,42 @@ class StockMarket(commands.Cog):
             await ctx.send("❌ Ticker symbol must be 5 characters or less!")
             return
         
-        async with self.bot.db.acquire() as conn:
+        async with self.bot.db.cursor() as cursor:
             # Check if user owns this company
-            company = await conn.fetchrow(
-                "SELECT id, is_public FROM companies WHERE owner_id = $1 AND name = $2",
-                ctx.author.id, company_name
+            await cursor.execute(
+                "SELECT id, is_public FROM companies WHERE owner_id = ? AND name = ?",
+                (ctx.author.id, company_name)
             )
+            company = await cursor.fetchone()
             
             if not company:
                 await ctx.send("❌ You don't own a company with that name!")
                 return
             
-            company_id = company['id']
-            is_public = company['is_public']
+            company_id, is_public = company
             
             if is_public:
                 await ctx.send("❌ This company is already public!")
                 return
             
             # Check if ticker exists
-            existing_ticker = await conn.fetchrow("SELECT id FROM stocks WHERE ticker = $1", ticker)
-            if existing_ticker:
+            await cursor.execute("SELECT id FROM stocks WHERE ticker = ?", (ticker,))
+            if await cursor.fetchone():
                 await ctx.send(f"❌ Ticker '{ticker}' is already in use!")
                 return
             
             # Create stock and mark company as public
-            await conn.execute(
-                "INSERT INTO stocks (company_id, ticker, price, available_shares, total_shares) VALUES ($1, $2, $3, $4, $5)",
-                company_id, ticker, price, shares, shares
+            await cursor.execute(
+                "INSERT INTO stocks (company_id, ticker, price, available_shares, total_shares) VALUES (?, ?, ?, ?, ?)",
+                (company_id, ticker, price, shares, shares)
             )
             
-            await conn.execute(
-                "UPDATE companies SET is_public = $1 WHERE id = $2",
-                True, company_id
+            await cursor.execute(
+                "UPDATE companies SET is_public = 1 WHERE id = ?",
+                (company_id,)
             )
+            
+            await self.bot.db.commit()
         
         embed = discord.Embed(
             title="🎉 IPO Launch!",
@@ -110,25 +115,22 @@ class StockMarket(commands.Cog):
             await ctx.send("❌ Available shares cannot be negative!")
             return
         
-        async with self.bot.db.acquire() as conn:
+        async with self.bot.db.cursor() as cursor:
             # Get stock info
-            stock = await conn.fetchrow(
+            await cursor.execute(
                 """SELECT s.id, s.available_shares, s.total_shares, c.owner_id, c.name
                    FROM stocks s
                    JOIN companies c ON s.company_id = c.id
-                   WHERE s.ticker = $1""",
-                ticker
+                   WHERE s.ticker = ?""",
+                (ticker,)
             )
+            stock = await cursor.fetchone()
             
             if not stock:
                 await ctx.send(f"❌ Stock '{ticker}' not found!")
                 return
             
-            stock_id = stock['id']
-            current_available = stock['available_shares']
-            total_shares = stock['total_shares']
-            owner_id = stock['owner_id']
-            company_name = stock['name']
+            stock_id, current_available, total_shares, owner_id, company_name = stock
             
             # Check ownership
             if owner_id != ctx.author.id:
@@ -144,10 +146,11 @@ class StockMarket(commands.Cog):
                 return
             
             # Update available shares
-            await conn.execute(
-                "UPDATE stocks SET available_shares = $1 WHERE id = $2",
-                new_available, stock_id
+            await cursor.execute(
+                "UPDATE stocks SET available_shares = ? WHERE id = ?",
+                (new_available, stock_id)
             )
+            await self.bot.db.commit()
         
         change = new_available - current_available
         
@@ -165,13 +168,14 @@ class StockMarket(commands.Cog):
     @commands.hybrid_command(name="stocks")
     async def list_stocks(self, ctx):
         """View all publicly traded stocks"""
-        async with self.bot.db.acquire() as conn:
-            stocks = await conn.fetch("""
+        async with self.bot.db.cursor() as cursor:
+            await cursor.execute("""
                 SELECT s.ticker, c.name, s.price, s.available_shares, s.total_shares
                 FROM stocks s
                 JOIN companies c ON s.company_id = c.id
                 ORDER BY s.ticker
             """)
+            stocks = await cursor.fetchall()
         
         if not stocks:
             await ctx.send("📉 No stocks available yet!")
@@ -183,12 +187,7 @@ class StockMarket(commands.Cog):
             color=discord.Color.blue()
         )
         
-        for row in stocks:
-            ticker = row['ticker']
-            company = row['name']
-            price = float(row['price'])
-            available = row['available_shares']
-            total = row['total_shares']
+        for ticker, company, price, available, total in stocks:
             owned_pct = ((total - available) / total * 100) if total > 0 else 0
             
             embed.add_field(
@@ -211,24 +210,22 @@ class StockMarket(commands.Cog):
             await ctx.send("❌ Amount must be positive!")
             return
         
-        async with self.bot.db.acquire() as conn:
+        async with self.bot.db.cursor() as cursor:
             # Get stock info
-            stock = await conn.fetchrow(
+            await cursor.execute(
                 """SELECT s.id, s.price, s.available_shares, c.name
                    FROM stocks s
                    JOIN companies c ON s.company_id = c.id
-                   WHERE s.ticker = $1""",
-                ticker
+                   WHERE s.ticker = ?""",
+                (ticker,)
             )
+            stock = await cursor.fetchone()
             
             if not stock:
                 await ctx.send(f"❌ Stock '{ticker}' not found!")
                 return
             
-            stock_id = stock['id']
-            price = float(stock['price'])
-            available = stock['available_shares']
-            company_name = stock['name']
+            stock_id, price, available, company_name = stock
             
             if amount > available:
                 await ctx.send(f"❌ Only {available:,} shares available!")
@@ -243,29 +240,32 @@ class StockMarket(commands.Cog):
                 return
             
             # Execute purchase
-            await conn.execute(
-                "UPDATE stocks SET available_shares = available_shares - $1 WHERE id = $2",
-                amount, stock_id
+            await cursor.execute(
+                "UPDATE stocks SET available_shares = available_shares - ? WHERE id = ?",
+                (amount, stock_id)
             )
             
             await self.update_user_balance(ctx.author.id, -total_cost)
             
             # Update holdings
-            holding = await conn.fetchrow(
-                "SELECT shares FROM holdings WHERE user_id = $1 AND stock_id = $2",
-                ctx.author.id, stock_id
+            await cursor.execute(
+                "SELECT shares FROM holdings WHERE user_id = ? AND stock_id = ?",
+                (ctx.author.id, stock_id)
             )
+            holding = await cursor.fetchone()
             
             if holding:
-                await conn.execute(
-                    "UPDATE holdings SET shares = shares + $1 WHERE user_id = $2 AND stock_id = $3",
-                    amount, ctx.author.id, stock_id
+                await cursor.execute(
+                    "UPDATE holdings SET shares = shares + ? WHERE user_id = ? AND stock_id = ?",
+                    (amount, ctx.author.id, stock_id)
                 )
             else:
-                await conn.execute(
-                    "INSERT INTO holdings (user_id, stock_id, shares) VALUES ($1, $2, $3)",
-                    ctx.author.id, stock_id, amount
+                await cursor.execute(
+                    "INSERT INTO holdings (user_id, stock_id, shares) VALUES (?, ?, ?)",
+                    (ctx.author.id, stock_id, amount)
                 )
+            
+            await self.bot.db.commit()
         
         new_balance = balance - total_cost
         
@@ -293,25 +293,23 @@ class StockMarket(commands.Cog):
             await ctx.send("❌ Amount must be positive!")
             return
         
-        async with self.bot.db.acquire() as conn:
+        async with self.bot.db.cursor() as cursor:
             # Get stock and holding info
-            result = await conn.fetchrow(
+            await cursor.execute(
                 """SELECT s.id, s.price, h.shares, c.name
                    FROM stocks s
                    JOIN companies c ON s.company_id = c.id
-                   LEFT JOIN holdings h ON s.id = h.stock_id AND h.user_id = $1
-                   WHERE s.ticker = $2""",
-                ctx.author.id, ticker
+                   LEFT JOIN holdings h ON s.id = h.stock_id AND h.user_id = ?
+                   WHERE s.ticker = ?""",
+                (ctx.author.id, ticker)
             )
+            result = await cursor.fetchone()
             
-            if not result or not result['shares']:
+            if not result or not result[2]:
                 await ctx.send(f"❌ You don't own any {ticker} shares!")
                 return
             
-            stock_id = result['id']
-            price = float(result['price'])
-            owned_shares = result['shares']
-            company_name = result['name']
+            stock_id, price, owned_shares, company_name = result
             
             if amount > owned_shares:
                 await ctx.send(f"❌ You only own {owned_shares:,} shares!")
@@ -321,23 +319,24 @@ class StockMarket(commands.Cog):
             
             # Update holding
             if amount == owned_shares:
-                await conn.execute(
-                    "DELETE FROM holdings WHERE user_id = $1 AND stock_id = $2",
-                    ctx.author.id, stock_id
+                await cursor.execute(
+                    "DELETE FROM holdings WHERE user_id = ? AND stock_id = ?",
+                    (ctx.author.id, stock_id)
                 )
             else:
-                await conn.execute(
-                    "UPDATE holdings SET shares = shares - $1 WHERE user_id = $2 AND stock_id = $3",
-                    amount, ctx.author.id, stock_id
+                await cursor.execute(
+                    "UPDATE holdings SET shares = shares - ? WHERE user_id = ? AND stock_id = ?",
+                    (amount, ctx.author.id, stock_id)
                 )
             
             # Return shares to market
-            await conn.execute(
-                "UPDATE stocks SET available_shares = available_shares + $1 WHERE id = $2",
-                amount, stock_id
+            await cursor.execute(
+                "UPDATE stocks SET available_shares = available_shares + ? WHERE id = ?",
+                (amount, stock_id)
             )
             
             await self.update_user_balance(ctx.author.id, total_value)
+            await self.bot.db.commit()
         
         balance = await self.get_user_balance(ctx.author.id)
         
@@ -358,15 +357,16 @@ class StockMarket(commands.Cog):
         """View your investment portfolio"""
         user = user or ctx.author
         
-        async with self.bot.db.acquire() as conn:
-            holdings = await conn.fetch("""
+        async with self.bot.db.cursor() as cursor:
+            await cursor.execute("""
                 SELECT s.ticker, c.name, s.price, h.shares
                 FROM holdings h
                 JOIN stocks s ON h.stock_id = s.id
                 JOIN companies c ON s.company_id = c.id
-                WHERE h.user_id = $1
+                WHERE h.user_id = ?
                 ORDER BY (s.price * h.shares) DESC
-            """, user.id)
+            """, (user.id,))
+            holdings = await cursor.fetchall()
         
         balance = await self.get_user_balance(user.id)
         
@@ -379,11 +379,7 @@ class StockMarket(commands.Cog):
             embed.description = "No stock holdings"
         else:
             total_value = 0
-            for row in holdings:
-                ticker = row['ticker']
-                company = row['name']
-                price = float(row['price'])
-                shares = row['shares']
+            for ticker, company, price, shares in holdings:
                 value = price * shares
                 total_value += value
                 embed.add_field(
@@ -400,7 +396,7 @@ class StockMarket(commands.Cog):
         
         embed.add_field(name="💰 Cash Balance", value=f"${balance:,.2f}", inline=False)
         
-        total_net_worth = balance + sum(float(row['price']) * row['shares'] for row in holdings)
+        total_net_worth = balance + sum(row[2] * row[3] for row in holdings)
         embed.set_footer(text=f"Net Worth: ${total_net_worth:,.2f}")
         
         await ctx.send(embed=embed)
@@ -421,29 +417,28 @@ class StockMarket(commands.Cog):
     async def daily_fluctuation(self):
         """Daily automatic stock price fluctuation"""
         try:
-            async with self.bot.db.acquire() as conn:
-                stocks = await conn.fetch("SELECT id, ticker, price FROM stocks")
+            async with self.bot.db.cursor() as cursor:
+                await cursor.execute("SELECT id, ticker, price FROM stocks")
+                stocks = await cursor.fetchall()
                 
                 if not stocks:
                     return
                 
                 changes = []
-                for row in stocks:
-                    stock_id = row['id']
-                    ticker = row['ticker']
-                    price = float(row['price'])
-                    
+                for stock_id, ticker, price in stocks:
                     # Random fluctuation -5% to +5%
                     change_pct = random.uniform(-0.05, 0.05)
                     new_price = price * (1 + change_pct)
                     new_price = max(0.01, round(new_price, 2))
                     
-                    await conn.execute(
-                        "UPDATE stocks SET price = $1 WHERE id = $2",
-                        new_price, stock_id
+                    await cursor.execute(
+                        "UPDATE stocks SET price = ? WHERE id = ?",
+                        (new_price, stock_id)
                     )
                     
                     changes.append((ticker, price, new_price, change_pct * 100))
+                
+                await self.bot.db.commit()
             
             print(f"✓ Daily fluctuation: Updated {len(changes)} stock(s)")
             for ticker, old, new, pct in changes:
@@ -462,8 +457,9 @@ class StockMarket(commands.Cog):
     async def manual_fluctuate(self, ctx):
         """Manually trigger stock price fluctuation (Admin/Owner only)"""
         async with ctx.typing():
-            async with self.bot.db.acquire() as conn:
-                stocks = await conn.fetch("SELECT id, ticker, price FROM stocks")
+            async with self.bot.db.cursor() as cursor:
+                await cursor.execute("SELECT id, ticker, price FROM stocks")
+                stocks = await cursor.fetchall()
                 
                 if not stocks:
                     await ctx.send("📉 No stocks to fluctuate!")
@@ -475,18 +471,14 @@ class StockMarket(commands.Cog):
                     color=discord.Color.blue()
                 )
                 
-                for row in stocks:
-                    stock_id = row['id']
-                    ticker = row['ticker']
-                    price = float(row['price'])
-                    
+                for stock_id, ticker, price in stocks:
                     change_pct = random.uniform(-0.05, 0.05)
                     new_price = price * (1 + change_pct)
                     new_price = max(0.01, round(new_price, 2))
                     
-                    await conn.execute(
-                        "UPDATE stocks SET price = $1 WHERE id = $2",
-                        new_price, stock_id
+                    await cursor.execute(
+                        "UPDATE stocks SET price = ? WHERE id = ?",
+                        (new_price, stock_id)
                     )
                     
                     emoji = "📈" if change_pct > 0 else "📉"
@@ -495,6 +487,8 @@ class StockMarket(commands.Cog):
                         value=f"${price:.2f} → ${new_price:.2f} ({change_pct * 100:+.2f}%)",
                         inline=True
                     )
+                
+                await self.bot.db.commit()
             
             await ctx.send(embed=embed)
 
