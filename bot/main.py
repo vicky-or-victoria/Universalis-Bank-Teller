@@ -40,6 +40,7 @@ class UniversalisBot(commands.Bot):
             "cogs.stock_market",
             "cogs.background_tasks",
             "cogs.admin",
+            "cogs.chatgpt_assistant",
         ]
 
         for cog in cogs:
