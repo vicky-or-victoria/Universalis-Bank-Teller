@@ -24,6 +24,7 @@ class FrancescaControl(commands.Cog):
         if "thanks francesca" in content or "thank you francesca" in content:
             self.paused_users[message.author.id] = True
             await message.add_reaction("👋")
+            await message.reply("You're welcome! I'll step back now. Say **'Hey Francesca'** if you need me again!")
             return
         
         # Check for "Hey Francesca" - resume responses for this user
@@ -31,6 +32,7 @@ class FrancescaControl(commands.Cog):
             if message.author.id in self.paused_users:
                 self.paused_users[message.author.id] = False
             await message.add_reaction("👋")
+            await message.reply("Hello! I'm back to help you! *smiles warmly*")
             return
         
         # Check for "Close Francesca" - close thread if user has proper role
@@ -40,12 +42,20 @@ class FrancescaControl(commands.Cog):
                 await message.reply("⚠️ This command only works in forum threads!")
                 return
             
-            # Check if user has the closer role
-            if not self.closer_role_id:
-                await message.reply("⚠️ Thread closer role not configured!")
-                return
+            # Check if user has the closer role (or is admin/owner)
+            has_permission = False
             
-            if not any(role.id == self.closer_role_id for role in message.author.roles):
+            # Check for admin permissions
+            if message.author.guild_permissions.administrator:
+                has_permission = True
+            # Check for closer role
+            elif self.closer_role_id and any(role.id == self.closer_role_id for role in message.author.roles):
+                has_permission = True
+            # Check if user is bot owner
+            elif await self.bot.is_owner(message.author):
+                has_permission = True
+            
+            if not has_permission:
                 await message.reply("❌ You don't have permission to close threads!")
                 return
             
@@ -58,8 +68,19 @@ class FrancescaControl(commands.Cog):
                 new_name = f"[CLOSED] {new_name}"
             
             try:
+                # Unarchive first if needed
+                if thread.archived:
+                    await thread.edit(archived=False)
+                
+                # Close and archive
                 await thread.edit(name=new_name, archived=True, locked=True)
-                await message.add_reaction("✅")
+                
+                embed = discord.Embed(
+                    title="👋 Thread Closed",
+                    description="This thread has been closed and archived. Thank you for banking with us!",
+                    color=discord.Color.blue()
+                )
+                await thread.send(embed=embed)
             except discord.Forbidden:
                 await message.reply("❌ I don't have permission to close this thread!")
             except discord.HTTPException as e:
