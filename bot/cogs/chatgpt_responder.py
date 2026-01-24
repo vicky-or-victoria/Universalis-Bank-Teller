@@ -31,10 +31,11 @@ Here's what you can help users with:
 
 **📊 Financial Reports:**
 - `!file_report` - File a financial report (I'll guide you through it!)
-  - You'll provide your company name
-  - List products/items with prices
-  - I roll dice (d100) for each item to determine sales
-  - Taxes are calculated and profits added to your company
+  - IMPORTANT: When users want to file a report, tell them to use `!file_report`
+  - DO NOT try to collect report information yourself in chat
+  - The file_report command will start an interactive session in that specific channel
+  - Reports are channel-specific - you can chat elsewhere while a report is active
+- `!report_status` - Check your active report session location
 - `!company_balance [company]` - Check your company's balance
 - `!view_reports "Company Name"` - View past financial reports
 - `!cancel_report` - Cancel an active report session
@@ -54,11 +55,15 @@ Here's what you can help users with:
 
 **💬 General:**
 - `!clear_chat` - Clear our conversation history
+- Say "Thanks Francesca" to pause my responses
+- Say "Hey Francesca" to resume my responses
+- Say "Close Francesca" to close a thread (with proper role)
 
 **How to Help Users:**
-- When someone asks about commands, naturally mention relevant ones based on their question
-- If they ask "how do I make money?" suggest both filing reports and stock trading
-- If they ask about reports, explain the dice roll system briefly
+- When someone asks about filing reports, direct them to use `!file_report`
+- NEVER try to collect company names, items, or prices in regular chat
+- If they ask "how do I make money?" suggest both `!file_report` and stock trading
+- If they ask about reports, explain the dice roll system and tell them to use `!file_report`
 - If they ask about stocks, explain buying/selling and portfolio management
 - Always be conversational - don't just list commands unless asked
 - Ask follow-up questions to understand what they need
@@ -70,7 +75,7 @@ Here's what you can help users with:
 - Keep responses concise but personable (2-4 sentences usually)
 - When explaining commands, give examples
 
-Remember: You're here to help and chat, not just recite commands! Make banking fun and accessible."""
+Remember: You're here to help and chat, not just recite commands! Make banking fun and accessible. DON'T try to handle financial reports yourself - always direct users to `!file_report` command."""
     
     async def call_chatgpt(self, messages: list) -> Optional[str]:
         """Call OpenAI API"""
@@ -151,8 +156,30 @@ Remember: You're here to help and chat, not just recite commands! Make banking f
         if not (in_responder_channel or in_forum_thread):
             return
         
-        # Respond to everything, not just non-commands
-        # This allows natural conversation
+        # CHECK 1: Don't respond to control phrases (handled by FrancescaControl)
+        content_lower = message.content.strip().lower()
+        if any(phrase in content_lower for phrase in [
+            "thanks francesca", "thank you francesca",
+            "hey francesca", "hi francesca", "hello francesca",
+            "close francesca"
+        ]):
+            return  # Let FrancescaControl handle it
+        
+        # CHECK 2: Don't respond if user has an active report session IN THIS CHANNEL
+        financial_reports_cog = self.bot.get_cog("FinancialReports")
+        if financial_reports_cog and message.author.id in financial_reports_cog.active_sessions:
+            session = financial_reports_cog.active_sessions[message.author.id]
+            if message.channel.id == session.get("channel_id"):
+                return  # Let FinancialReports handle it in this channel
+        
+        # CHECK 3: Don't respond if user has paused Francesca
+        francesca_control_cog = self.bot.get_cog("FrancescaControl")
+        if francesca_control_cog and francesca_control_cog.is_user_paused(message.author.id):
+            return  # User has paused responses
+        
+        # Don't respond to commands
+        if message.content.startswith("!"):
+            return
         
         async with message.channel.typing():
             # Get conversation history
