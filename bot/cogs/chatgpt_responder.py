@@ -11,6 +11,7 @@ class ChatGPTResponder(commands.Cog):
         self.bot = bot
         self.api_key = os.getenv("OPENAI_API_KEY")
         self.responder_channel_id = int(os.getenv("RESPONDER_CHANNEL_ID", "0"))
+        self.forum_channel_id = int(os.getenv("FORUM_CHANNEL_ID", "0"))
         self.model = os.getenv("OPENAI_MODEL", "gpt-4")
         
         # Conversation history per user (user_id -> list of messages)
@@ -110,13 +111,22 @@ Remember: You're here to help and chat, not just recite commands!"""
     
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Auto-respond to all messages in the responder channel"""
+        """Auto-respond to all messages in the responder channel or forum threads"""
         # Ignore bot messages
         if message.author.bot:
             return
         
-        # Check if message is in the responder channel
-        if message.channel.id != self.responder_channel_id:
+        # Check if message is in the responder channel (regular text channel)
+        in_responder_channel = message.channel.id == self.responder_channel_id
+        
+        # Check if message is in a forum thread
+        in_forum_thread = False
+        if isinstance(message.channel, discord.Thread):
+            if message.channel.parent_id == self.forum_channel_id:
+                in_forum_thread = True
+        
+        # Only respond if in designated channel or forum thread
+        if not (in_responder_channel or in_forum_thread):
             return
         
         # Respond to everything, not just non-commands
@@ -161,16 +171,31 @@ Remember: You're here to help and chat, not just recite commands!"""
     
     @commands.hybrid_command(name="set_responder_channel")
     @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
-    async def set_responder_channel(self, ctx, channel: discord.TextChannel):
-        """Set the channel where Franky auto-responds (Admin/Owner only)"""
-        self.responder_channel_id = channel.id
+    async def set_responder_channel(self, ctx, channel: discord.TextChannel = None, forum: discord.ForumChannel = None):
+        """Set the channel where Franky auto-responds (Admin/Owner only)
         
-        embed = discord.Embed(
-            title="✅ Responder Channel Set",
-            description=f"Franky will now automatically respond in {channel.mention}",
-            color=discord.Color.green()
-        )
-        await ctx.send(embed=embed)
+        Usage: 
+        !set_responder_channel #channel-name (for regular text channel)
+        !set_responder_channel forum=#forum-name (for forum channel)
+        """
+        if channel:
+            self.responder_channel_id = channel.id
+            embed = discord.Embed(
+                title="✅ Responder Channel Set",
+                description=f"Franky will now automatically respond in {channel.mention}",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
+        elif forum:
+            self.forum_channel_id = forum.id
+            embed = discord.Embed(
+                title="✅ Forum Channel Set",
+                description=f"Franky will now automatically respond in all threads in {forum.mention}",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
+        else:
+            await ctx.send("❌ Please provide either a text channel or forum channel!\nUsage: `!set_responder_channel #channel` or `!set_responder_channel forum=#forum`")
     
     @commands.hybrid_command(name="responder_stats")
     @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
@@ -179,8 +204,11 @@ Remember: You're here to help and chat, not just recite commands!"""
         total_users = len(self.conversations)
         total_messages = sum(len(conv) for conv in self.conversations.values())
         
-        channel = self.bot.get_channel(self.responder_channel_id)
-        channel_name = channel.mention if channel else "Not Set"
+        text_channel = self.bot.get_channel(self.responder_channel_id)
+        text_channel_name = text_channel.mention if text_channel else "Not Set"
+        
+        forum_channel = self.bot.get_channel(self.forum_channel_id)
+        forum_channel_name = forum_channel.mention if forum_channel else "Not Set"
         
         embed = discord.Embed(
             title="🤖 ChatGPT Responder Statistics",
@@ -189,8 +217,11 @@ Remember: You're here to help and chat, not just recite commands!"""
         embed.add_field(name="Active Users", value=str(total_users), inline=True)
         embed.add_field(name="Total Messages", value=str(total_messages), inline=True)
         embed.add_field(name="Model", value=self.model, inline=True)
-        embed.add_field(name="Responder Channel", value=channel_name, inline=False)
+        embed.add_field(name="Text Channel", value=text_channel_name, inline=False)
+        embed.add_field(name="Forum Channel", value=forum_channel_name, inline=False)
         
         await ctx.send(embed=embed)
+
+
 async def setup(bot):
     await bot.add_cog(ChatGPTResponder(bot))
