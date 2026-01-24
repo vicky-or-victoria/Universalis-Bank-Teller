@@ -120,8 +120,7 @@ class TradingBot(commands.Bot):
         await super().close()
 
 
-# Replace this with your Discord user ID
-bot = TradingBot(owner_ids={YOUR_DISCORD_ID_HERE})
+bot = TradingBot(owner_ids={795733380532404224})
 
 
 @bot.event
