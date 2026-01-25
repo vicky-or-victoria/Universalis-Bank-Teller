@@ -218,16 +218,15 @@ Remember: You're here to help and chat, not just recite commands! Make banking f
                 await report_cog.file_report(ctx)
                 return  # Don't continue with normal chat response
         
-        # CHECK 3: Allow chatbot responses even during report filing
-        # The report filing cog will handle its own messages, we just chat normally
+        # CHECK 3: Don't interfere with active report filing
+        # If user has an active report session in THIS channel, let ReportFiling handle it
         report_cog = self.bot.get_cog("ReportFiling")
         if report_cog and message.author.id in report_cog.active_sessions:
             session = report_cog.active_sessions[message.author.id]
-            # If they're filing a report in THIS channel, let the report cog handle it
             if message.channel.id == session.get("channel_id"):
-                # Don't respond to messages that look like report data
-                if not message.content.startswith("ub!"):
-                    return  # Let ReportFiling handle it
+                # This message is part of the report filing process
+                # Let the ReportFiling cog handle it completely
+                return
         
         # CHECK 4: Don't respond if Francesca is paused in this channel
         francesca_control_cog = self.bot.get_cog("FrancescaControl")
