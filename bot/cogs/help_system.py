@@ -26,7 +26,7 @@ class HelpSystem(commands.Cog):
             # Main help menu
             embed = discord.Embed(
                 title="📚 Francesca's Banking System - Help",
-                description="Welcome to the trading and business server! Here's how to get started.",
+                description="Welcome to our Bank! Here's how to get started.",
                 color=discord.Color.blue()
             )
             
