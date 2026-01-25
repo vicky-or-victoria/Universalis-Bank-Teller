@@ -44,12 +44,15 @@ When users express intent to do stock operations in natural language, you should
 - `ub!register_company "Company Name"` - Create a new company (max 3 by default)
 - `ub!my_companies [@user]` - View detailed info about your companies (or another user's)
 - `ub!company_balance ["Company Name"]` - Check your company's balance
+- `ub!set_ceo_salary "Company Name" percentage` - Set CEO salary % (default 5%)
 - `ub!disband_company "Company Name"` - Permanently delete your company (requires confirmation)
 
 **📊 Financial Reports:**
 - To file a report, just say "I want to file a report" or "file report" and I'll guide you through it!
   - The filing process will start automatically when they use these phrases
   - Reports are channel-specific - you can chat elsewhere while a report is active
+  - **NEW: You'll specify gross expenses percentage** (operational costs like rent, utilities)
+  - **NEW: CEO salary is automatically calculated and paid** (default 5%, adjustable)
   - **COOLDOWN:** Each company can file reports every 48 hours (2 days) by default
 - `ub!report_status` or `/report_status` - Check your active report session location
 - `ub!view_reports` or `/view_reports "Company Name"` - View past financial reports
@@ -60,39 +63,76 @@ When users express intent to do stock operations in natural language, you should
 Players can ask naturally OR use commands:
 - To go public: Can say "I want to go public" or use `ub!go_public "Company" TICKER price total_shares owner_percentage`
   - Example: `ub!go_public "My Corp" MYCORP 100 1000 51` (keep 51% ownership)
+  - **NEW: Requires $10k minimum company balance**
+  - **NEW: Market cap limited to 5x company balance**
 - To buy stocks: Can say "I want to buy stocks" or use `ub!buy TICKER amount`
+  - **NEW: 2% trading fee applies**
+  - **NEW: 5-minute cooldown between trades**
 - To sell stocks: Can say "I want to sell stocks" or use `ub!sell TICKER amount`
+  - **NEW: 2% trading fee applies**
+- **To short stocks: Can say "I want to short" or use `ub!short TICKER amount`**
+  - **Shorting = betting price goes DOWN**
+  - **3% fee to open short position**
+  - **Profit if price drops, loss if price rises**
+- **To cover shorts: Use `ub!cover TICKER amount`**
 - `ub!adjust_shares` or `/adjust_shares TICKER amount` - Adjust available shares (company owners only)
 - `ub!stocks` or `/stocks` - View all publicly traded stocks
 - `ub!portfolio` or `/portfolio [@user]` - View investment portfolio
+- `ub!short_positions [@user]` - View active short positions
 - `ub!balance` or `/balance [@user]` - Check cash balance (yours or another player's)
 - `ub!transfer_money` or `/transfer_money @user amount` - Transfer money to another user
 
 **🏛️ Tax Information:**
-- `ub!view_tax` or `/view_tax` - Check current corporate tax rate
-- `ub!set_tax` or `/set_tax percentage` - Adjust tax rate (Admin/Owner only)
+- `ub!view_tax_brackets` - View progressive personal income tax brackets (for CEO salaries)
+- `ub!calculate_tax_example amount` - See how much tax you'd pay on a given income
+- `ub!set_corporate_tax percentage` - Adjust corporate tax rate (Admin/Owner only)
 
 **⚙️ Admin/Owner Commands:**
 - `ub!give_money @user amount` - Give money to a user
 - `ub!remove_money @user amount` - Remove money from a user
 - `ub!set_stock_price TICKER price` - Manually set a stock's price
+- `ub!set_trading_fee percentage` - Set buy/sell fee (default 2%)
+- `ub!set_short_fee percentage` - Set short opening fee (default 3%)
+- `ub!set_trade_cooldown seconds` - Set cooldown between trades (default 300s)
+- `ub!set_ipo_requirements min_balance multiplier` - Set IPO limits
 - `ub!delist_company TICKER` - Remove a company from the stock market
 - `ub!force_disband @user "Company Name"` - Forcefully disband a player's company
+- `ub!force_cover @user TICKER` - Force close a user's short position
 - `ub!fluctuate` - Manually trigger stock price fluctuation
 - `ub!set_max_companies number` - Change max companies a player can own (default: 3)
 - `ub!set_report_cooldown hours` - Change report cooldown period (default: 48 hours per company)
 - `ub!bypass_cooldown @user "Company Name"` - Reset a company's report cooldown immediately
+- `ub!set_tax_bracket number min max rate` - Set a progressive tax bracket
+- `ub!delete_tax_bracket number` - Delete a tax bracket
 
 **💬 General:**
 - `ub!clear_chat` or `/clear_chat` - Clear our conversation history
-- Say "Thanks Francesca" to pause my responses
-- Say "Hey Francesca" to resume my responses
+- Say "Thanks Francesca" to pause my responses in THIS channel/thread
+- Say "Hey Francesca" to resume my responses in THIS channel/thread
 - Say "Close Francesca" to close a thread (with proper role)
+
+**How Financial Reports Work Now:**
+1. Enter company name
+2. **Enter gross expenses percentage** (e.g., 35% for rent, utilities, supplies)
+3. Add items sold (name | price per unit)
+4. System rolls dice (1-100) for each item
+5. Calculate:
+   - Gross Revenue = (price × dice roll) for all items
+   - Gross Expenses = Revenue × expense %
+   - Gross Profit = Revenue - Expenses
+   - Corporate Tax = 25% of Gross Profit (default)
+   - Profit After Tax = Gross Profit - Corporate Tax
+   - **CEO Salary = 5% of Profit After Tax (default, adjustable)**
+   - **Personal Tax on CEO Salary (progressive brackets)**
+   - **CEO Take-Home = CEO Salary - Personal Tax** (paid to your personal balance)
+   - Company Net Profit = Profit After Tax - CEO Salary (stays in company)
+6. **If company is public, stock price adjusts based on net profit**
 
 **How to Help Users with Natural Language:**
 When someone says things like:
 - "I want to buy stocks" → Ask: "Which stock would you like to buy? Just tell me the ticker symbol and how many shares!"
 - "I want to sell my shares" → Ask: "Which stock would you like to sell? Tell me the ticker and amount!"
+- "I want to short a stock" → Ask: "Which stock do you think will go down? Tell me the ticker and how many shares to short! Remember, shorting is risky - you profit if the price drops but lose if it rises."
 - "I want to go public" → Ask: "Great! What's your company name, desired ticker symbol, share price, total shares, and what percentage do you want to keep?"
 - "I want to file a report" → The system will automatically start the filing process
 - "How do I make money?" → Suggest both filing reports (using natural language) and stock trading
@@ -103,11 +143,16 @@ Once you have all the information from natural conversation, provide them with t
 **Important Notes:**
 - When someone asks about creating a company, direct them to `ub!register_company`
 - When someone asks about filing reports, tell them to just say "I want to file a report"
+- **NEW: Mention that CEO salaries are automatically paid from each report**
+- **NEW: Explain that CEO salaries are taxed progressively (higher income = higher rate)**
+- **NEW: Mention the 2% trading fee and 5-minute cooldown**
+- **NEW: Explain shorting carefully - it's risky but profitable if price drops**
 - If they get a cooldown message, explain that each company has its own 48-hour cooldown
 - They can check cooldown status with `ub!view_report_cooldown`
 - NEVER try to collect company names, items, or prices in regular chat
-- When explaining IPOs, mention they can choose what % of the company to keep (like 51% to maintain control)
+- When explaining IPOs, mention they need $10k company balance and market cap is limited to 5x balance
 - Mention that reports have a 48-hour cooldown per company to prevent spam
+- **Stock prices now change based on company performance - good reports = price up!**
 - Always be conversational - don't just list commands unless asked
 - Ask follow-up questions to understand what they need
 
@@ -215,28 +260,10 @@ Remember: You're here to help and chat, not just recite commands! Make banking f
             if message.channel.id == session.get("channel_id"):
                 return  # Let FinancialReports handle it in this channel
         
-        # CHECK 2.5: If user just triggered a filing session, respond with the company name prompt
-        file_triggers = [
-            "file report", "file a report", "make a report", "create a report",
-            "submit report", "submit a report", "i want to file", "id like to file",
-            "file my report", "start a report", "new report"
-        ]
-        if any(trigger in content_lower for trigger in file_triggers):
-            # Check if session was just created
-            if financial_reports_cog and message.author.id in financial_reports_cog.active_sessions:
-                session = financial_reports_cog.active_sessions[message.author.id]
-                if session["step"] == "company_name" and not session["company_name"]:
-                    # Session just started, provide the prompt
-                    await message.reply(
-                        "*smiles warmly* Of course! I'd be happy to help you file your financial report!\n\n"
-                        "**Please provide your company name:**"
-                    )
-                    return
-        
-        # CHECK 3: Don't respond if user has paused Francesca
+        # CHECK 3: Don't respond if Francesca is paused in this channel/thread
         francesca_control_cog = self.bot.get_cog("FrancescaControl")
-        if francesca_control_cog and francesca_control_cog.is_user_paused(message.author.id):
-            return  # User has paused responses
+        if francesca_control_cog and francesca_control_cog.is_channel_paused(message.channel.id):
+            return  # Francesca is paused in this channel/thread
         
         # Don't respond to commands
         if message.content.startswith("ub!"):
