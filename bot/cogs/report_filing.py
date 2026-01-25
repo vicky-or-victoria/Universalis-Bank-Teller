@@ -23,7 +23,7 @@ class ReportFiling(commands.Cog):
         self.active_sessions = {}
         
         # Pagination for viewing reports
-        self.report_views = {}  # user_id -> {company_id, page, total_pages}
+        self.report_views = {}
     
     async def call_chatgpt(self, messages: list) -> Optional[str]:
         """Call OpenAI API"""
@@ -80,9 +80,137 @@ class ReportFiling(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Handle report filing conversation"""
-        # [Previous code remains the same until process_report...]
-        # Keeping existing message handling logic
-        pass
+        if message.author.bot:
+            return
+        
+        user_id = message.author.id
+        
+        if user_id not in self.active_sessions:
+            return
+        
+        session = self.active_sessions[user_id]
+        
+        # Check if message is in the correct channel
+        if message.channel.id != session["channel_id"]:
+            return
+        
+        # Don't process commands
+        if message.content.startswith("ub!") or message.content.startswith("/"):
+            return
+        
+        # Step 1: Get company name
+        if session["step"] == "company_name":
+            company_name = message.content.strip()
+            
+            async with self.bot.db.acquire() as conn:
+                company = await conn.fetchrow(
+                    "SELECT id, ceo_salary_percent FROM companies WHERE owner_id = $1 AND name = $2",
+                    user_id, company_name
+                )
+                
+                if not company:
+                    await message.reply(f"❌ You don't own a company named **{company_name}**!")
+                    del self.active_sessions[user_id]
+                    return
+                
+                # Check cooldown
+                last_report = await conn.fetchrow(
+                    "SELECT reported_at FROM reports WHERE company_id = $1 ORDER BY reported_at DESC LIMIT 1",
+                    company['id']
+                )
+                
+                if last_report:
+                    time_since = datetime.now() - last_report['reported_at']
+                    cooldown_hours = self.report_cooldown_hours
+                    
+                    if time_since < timedelta(hours=cooldown_hours):
+                        remaining = timedelta(hours=cooldown_hours) - time_since
+                        hours = int(remaining.total_seconds() // 3600)
+                        minutes = int((remaining.total_seconds() % 3600) // 60)
+                        
+                        await message.reply(
+                            f"⏰ **{company_name}** is on cooldown!\n"
+                            f"Time remaining: **{hours}h {minutes}m**"
+                        )
+                        del self.active_sessions[user_id]
+                        return
+            
+            session["company_name"] = company_name
+            session["company_id"] = company['id']
+            session["ceo_salary_percent"] = float(company['ceo_salary_percent'])
+            session["step"] = "expenses"
+            
+            await message.reply(
+                f"Great! Filing report for **{company_name}**.\n\n"
+                "**What percentage of revenue goes to expenses?**\n"
+                "_(Enter a number between 0-100, e.g., 35 for 35%)_"
+            )
+        
+        # Step 2: Get expense percentage
+        elif session["step"] == "expenses":
+            try:
+                expenses = float(message.content.strip())
+            except ValueError:
+                await message.reply("⚠️ Please enter a valid number!")
+                return
+            
+            if expenses < 0 or expenses > 100:
+                await message.reply("⚠️ Percentage must be between 0 and 100!")
+                return
+            
+            session["gross_expenses_percent"] = expenses
+            session["step"] = "items"
+            
+            await message.reply(
+                f"**Expense percentage set to {expenses}%**\n\n"
+                "Now, let's add your products/services!\n\n"
+                "**Format:** `Product Name | Price`\n"
+                "**Example:** `Premium Widget | 299.99`\n\n"
+                "Add as many items as you want, then type **`done`** when finished."
+            )
+        
+        # Step 3: Collect items
+        elif session["step"] == "items":
+            content = message.content.strip()
+            
+            if content.lower() == "done":
+                if len(session["items"]) == 0:
+                    await message.reply("⚠️ You need to add at least one item! Type the item in format: `Name | Price`")
+                    return
+                
+                # Process the report
+                await self.process_report(message, session)
+                del self.active_sessions[user_id]
+                return
+            
+            # Parse item
+            if "|" not in content:
+                await message.reply("⚠️ Invalid format! Use: `Product Name | Price`")
+                return
+            
+            parts = content.split("|")
+            if len(parts) != 2:
+                await message.reply("⚠️ Invalid format! Use: `Product Name | Price`")
+                return
+            
+            item_name = parts[0].strip()
+            try:
+                price = float(parts[1].strip())
+            except ValueError:
+                await message.reply("⚠️ Invalid price! Please enter a number.")
+                return
+            
+            if price <= 0:
+                await message.reply("⚠️ Price must be positive!")
+                return
+            
+            session["items"].append({"name": item_name, "price": price})
+            
+            await message.reply(
+                f"✅ Added **{item_name}** at **${price:,.2f}**\n"
+                f"Total items: {len(session['items'])}\n\n"
+                f"Add another item or type **`done`** to process the report."
+            )
     
     async def process_report(self, message: discord.Message, session: dict):
         """Process the financial report with all calculations, events, and CEO caps"""
@@ -267,6 +395,92 @@ class ReportFiling(commands.Cog):
         
         await message.reply(embed=embed)
     
+    @commands.hybrid_command(name="cancel_report")
+    async def cancel_report(self, ctx):
+        """Cancel your active report filing session"""
+        if ctx.author.id in self.active_sessions:
+            del self.active_sessions[ctx.author.id]
+            await ctx.send("✅ Report filing session cancelled.")
+        else:
+            await ctx.send("ℹ️ You don't have an active report session.")
+    
+    @commands.hybrid_command(name="report_status")
+    async def report_status(self, ctx):
+        """Check your active report filing session"""
+        if ctx.author.id not in self.active_sessions:
+            await ctx.send("ℹ️ You don't have an active report session.")
+            return
+        
+        session = self.active_sessions[ctx.author.id]
+        step_names = {
+            "company_name": "Waiting for company name",
+            "expenses": "Waiting for expense percentage",
+            "items": "Adding items"
+        }
+        
+        embed = discord.Embed(
+            title="📋 Report Filing Status",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Current Step", value=step_names.get(session["step"], "Unknown"), inline=False)
+        
+        if session.get("company_name"):
+            embed.add_field(name="Company", value=session["company_name"], inline=True)
+        
+        if session.get("gross_expenses_percent"):
+            embed.add_field(name="Expenses", value=f"{session['gross_expenses_percent']}%", inline=True)
+        
+        if session.get("items"):
+            embed.add_field(name="Items Added", value=str(len(session["items"])), inline=True)
+        
+        await ctx.send(embed=embed)
+    
+    @commands.hybrid_command(name="view_report_cooldown")
+    async def view_report_cooldown(self, ctx):
+        """Check report cooldown status for all your companies"""
+        async with self.bot.db.acquire() as conn:
+            companies = await conn.fetch(
+                "SELECT id, name FROM companies WHERE owner_id = $1",
+                ctx.author.id
+            )
+            
+            if not companies:
+                await ctx.send("❌ You don't own any companies!")
+                return
+            
+            embed = discord.Embed(
+                title="⏰ Report Cooldown Status",
+                description=f"Cooldown period: **{self.report_cooldown_hours} hours**",
+                color=discord.Color.blue()
+            )
+            
+            for company in companies:
+                company_id = company['id']
+                company_name = company['name']
+                
+                last_report = await conn.fetchrow(
+                    "SELECT reported_at FROM reports WHERE company_id = $1 ORDER BY reported_at DESC LIMIT 1",
+                    company_id
+                )
+                
+                if not last_report:
+                    status = "✅ **Ready to file!**"
+                else:
+                    time_since = datetime.now() - last_report['reported_at']
+                    cooldown_time = timedelta(hours=self.report_cooldown_hours)
+                    
+                    if time_since >= cooldown_time:
+                        status = "✅ **Ready to file!**"
+                    else:
+                        remaining = cooldown_time - time_since
+                        hours = int(remaining.total_seconds() // 3600)
+                        minutes = int((remaining.total_seconds() % 3600) // 60)
+                        status = f"⏳ **{hours}h {minutes}m** remaining"
+                
+                embed.add_field(name=company_name, value=status, inline=False)
+        
+        await ctx.send(embed=embed)
+    
     @commands.hybrid_command(name="view_reports")
     async def view_reports(self, ctx, company_name: str):
         """View financial reports for your company (paginated)"""
@@ -302,13 +516,72 @@ class ReportFiling(commands.Cog):
             embed = await view.create_embed()
             
             await ctx.send(embed=embed, view=view)
+    
+    @commands.hybrid_command(name="set_report_cooldown")
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
+    async def set_report_cooldown(self, ctx, hours: int):
+        """Set the report cooldown in hours (Admin/Owner only)"""
+        if hours < 0:
+            await ctx.send("❌ Cooldown must be non-negative!")
+            return
+        
+        old_cooldown = self.report_cooldown_hours
+        self.report_cooldown_hours = hours
+        
+        embed = discord.Embed(
+            title="⏰ Report Cooldown Updated",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Previous", value=f"{old_cooldown} hours", inline=True)
+        embed.add_field(name="New", value=f"{hours} hours", inline=True)
+        
+        await ctx.send(embed=embed)
+    
+    @commands.hybrid_command(name="bypass_cooldown")
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
+    async def bypass_cooldown(self, ctx, user: discord.User, company_name: str):
+        """Reset report cooldown for a company (Admin/Owner only)"""
+        async with self.bot.db.acquire() as conn:
+            company = await conn.fetchrow(
+                "SELECT id FROM companies WHERE owner_id = $1 AND name = $2",
+                user.id, company_name
+            )
+            
+            if not company:
+                await ctx.send(f"❌ {user.mention} doesn't own a company named **{company_name}**!")
+                return
+            
+            # Delete all reports to reset cooldown (or you could just delete the latest one)
+            # For safety, let's just inform them the company is ready
+            last_report = await conn.fetchrow(
+                "SELECT reported_at FROM reports WHERE company_id = $1 ORDER BY reported_at DESC LIMIT 1",
+                company['id']
+            )
+            
+            if not last_report:
+                await ctx.send(f"ℹ️ **{company_name}** has no reports to reset!")
+                return
+            
+            # Delete the most recent report to reset cooldown
+            await conn.execute(
+                "DELETE FROM reports WHERE company_id = $1 AND reported_at = $2",
+                company['id'], last_report['reported_at']
+            )
+        
+        embed = discord.Embed(
+            title="✅ Cooldown Bypassed",
+            description=f"**{company_name}** (owned by {user.mention}) can now file a report immediately!",
+            color=discord.Color.green()
+        )
+        
+        await ctx.send(embed=embed)
 
 
 class ReportsPaginationView(discord.ui.View):
     """Pagination view for company reports"""
     
     def __init__(self, bot, company_id: int, company_name: str, current_page: int, total_pages: int, reports_per_page: int):
-        super().__init__(timeout=180)  # 3 minute timeout
+        super().__init__(timeout=180)
         self.bot = bot
         self.company_id = company_id
         self.company_name = company_name
@@ -316,7 +589,6 @@ class ReportsPaginationView(discord.ui.View):
         self.total_pages = total_pages
         self.reports_per_page = reports_per_page
         
-        # Update button states
         self.update_buttons()
     
     def update_buttons(self):
@@ -362,7 +634,12 @@ class ReportsPaginationView(discord.ui.View):
                 inline=False
             )
         
-        embed.set_footer(text=f"Showing reports {start_idx}-{start_idx + len(reports) - 1} of {self.total_pages * self.reports_per_page}")
+        total_reports = await self.bot.db.fetchval(
+            "SELECT COUNT(*) FROM reports WHERE company_id = $1",
+            self.company_id
+        )
+        
+        embed.set_footer(text=f"Showing reports {start_idx}-{min(start_idx + len(reports) - 1, total_reports)} of {total_reports}")
         
         return embed
     
@@ -403,3 +680,7 @@ class ReportsPaginationView(discord.ui.View):
         """Close the pagination view"""
         await interaction.response.edit_message(view=None)
         self.stop()
+
+
+async def setup(bot):
+    await bot.add_cog(ReportFiling(bot))
