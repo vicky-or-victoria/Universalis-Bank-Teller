@@ -3,12 +3,12 @@ from discord.ext import commands
 import os
 
 class FrancescaControl(commands.Cog):
-    """Control when Francesca responds in threads"""
+    """Control when Francesca responds in threads and channels"""
     
     def __init__(self, bot):
         self.bot = bot
-        # Track which users have paused Francesca (user_id -> True/False)
-        self.paused_users = {}
+        # Track which channels/threads have paused Francesca (channel_id -> True/False)
+        self.paused_channels = {}
         # Role ID that can close threads
         self.closer_role_id = int(os.getenv("THREAD_CLOSER_ROLE_ID", "0"))
     
@@ -20,17 +20,17 @@ class FrancescaControl(commands.Cog):
         
         content = message.content.strip().lower()
         
-        # Check for "Thanks Francesca" - pause responses for this user
+        # Check for "Thanks Francesca" - pause responses for THIS CHANNEL/THREAD
         if "thanks francesca" in content or "thank you francesca" in content:
-            self.paused_users[message.author.id] = True
+            self.paused_channels[message.channel.id] = True
             await message.add_reaction("👋")
             await message.reply("You're welcome! I'll step back now. Say **'Hey Francesca'** if you need me again!")
             return
         
-        # Check for "Hey Francesca" - resume responses for this user
+        # Check for "Hey Francesca" - resume responses for THIS CHANNEL/THREAD
         if "hey francesca" in content or "hi francesca" in content or "hello francesca" in content:
-            if message.author.id in self.paused_users:
-                self.paused_users[message.author.id] = False
+            if message.channel.id in self.paused_channels:
+                self.paused_channels[message.channel.id] = False
             await message.add_reaction("👋")
             await message.reply("Hello! I'm back to help you! *smiles warmly*")
             return
@@ -86,9 +86,9 @@ class FrancescaControl(commands.Cog):
             except discord.HTTPException as e:
                 await message.reply(f"❌ Error closing thread: {e}")
     
-    def is_user_paused(self, user_id: int) -> bool:
-        """Check if a user has paused Francesca"""
-        return self.paused_users.get(user_id, False)
+    def is_channel_paused(self, channel_id: int) -> bool:
+        """Check if Francesca is paused in this channel/thread"""
+        return self.paused_channels.get(channel_id, False)
     
     @commands.hybrid_command(name="set_closer_role")
     @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
@@ -108,22 +108,36 @@ class FrancescaControl(commands.Cog):
     
     @commands.hybrid_command(name="francesca_status")
     async def francesca_status(self, ctx):
-        """Check if Francesca is paused for you"""
-        is_paused = self.is_user_paused(ctx.author.id)
+        """Check if Francesca is paused in this channel/thread"""
+        is_paused = self.is_channel_paused(ctx.channel.id)
         
         if is_paused:
             embed = discord.Embed(
-                title="⏸️ Francesca is Paused",
-                description="Say **'Hey Francesca'** to resume responses",
+                title="⏸️ Francesca is Paused in This Channel",
+                description="Say **'Hey Francesca'** to resume responses here",
                 color=discord.Color.orange()
             )
         else:
             embed = discord.Embed(
-                title="✅ Francesca is Active",
-                description="Say **'Thanks Francesca'** to pause responses",
+                title="✅ Francesca is Active in This Channel",
+                description="Say **'Thanks Francesca'** to pause responses here",
                 color=discord.Color.green()
             )
         
+        await ctx.send(embed=embed)
+    
+    @commands.hybrid_command(name="unpause_all")
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
+    async def unpause_all(self, ctx):
+        """Unpause Francesca in all channels (Admin/Owner only)"""
+        count = len([v for v in self.paused_channels.values() if v])
+        self.paused_channels.clear()
+        
+        embed = discord.Embed(
+            title="✅ All Channels Unpaused",
+            description=f"Francesca has been unpaused in {count} channel(s)/thread(s)",
+            color=discord.Color.green()
+        )
         await ctx.send(embed=embed)
 
 
