@@ -38,14 +38,14 @@ class TradingBot(commands.Bot):
         
         try:
             self.db = await asyncpg.create_pool(database_url)
-            print("✓ Connected to PostgreSQL database")
+            print("✅ Connected to PostgreSQL database")
         except Exception as e:
             print(f"❌ Failed to connect to database: {e}")
             return
         
         await self.init_database()
 
-        # Load all cogs
+        # Load all cogs (removed company_events since it's not a cog)
         cogs = [
             "cogs.help_system",
             "cogs.chatgpt_responder",
@@ -55,21 +55,20 @@ class TradingBot(commands.Bot):
             "cogs.francesca_control",
             "cogs.short_selling",
             "cogs.tax_system",
-            "cogs.admin_company_tools",  # NEW
+            "cogs.admin_company_tools",
             "cogs.leaderboard",
-            "cogs.company_events",
         ]
 
         for cog in cogs:
             try:
                 await self.load_extension(cog)
-                print(f"✓ Loaded {cog}")
+                print(f"✅ Loaded {cog}")
             except Exception as e:
-                print(f"✗ Failed to load {cog}: {e}")
+                print(f"❌ Failed to load {cog}: {e}")
 
         # Sync slash commands
         await self.tree.sync()
-        print("✓ Synced slash commands")
+        print("✅ Synced slash commands")
 
     async def init_database(self):
         """Initialize database tables"""
@@ -189,7 +188,7 @@ class TradingBot(commands.Bot):
                 )
             """)
             
-            print("✓ Database tables initialized")
+            print("✅ Database tables initialized")
 
     async def close(self):
         """Cleanup on shutdown"""
@@ -203,8 +202,8 @@ bot = TradingBot(owner_ids={795733380532404224})
 
 @bot.event
 async def on_ready():
-    print(f"✓ {bot.user} is ready!")
-    print(f"✓ Connected to {len(bot.guilds)} guild(s)")
+    print(f"✅ {bot.user} is ready!")
+    print(f"✅ Connected to {len(bot.guilds)} guild(s)")
 
 
 async def main():
