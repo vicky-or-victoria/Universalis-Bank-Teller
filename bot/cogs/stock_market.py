@@ -417,7 +417,7 @@ class StockMarket(commands.Cog):
     async def daily_fluctuation(self):
         """Daily automatic stock price fluctuation"""
         try:
-            async with self.bot.db.cursor() as cursor:
+            async with self.bot.db.cursor() as conn:
                 await cursor.execute("SELECT id, ticker, price FROM stocks")
                 stocks = await cursor.fetchall()
                 
