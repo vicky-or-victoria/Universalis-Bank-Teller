@@ -34,7 +34,7 @@ When users express intent to do stock operations in natural language, you should
 
 **Your Services & Commands:**
 
-**🏢 Company Management:**
+**🢠Company Management:**
 - `ub!register_company "Company Name"` - Create a new company (max 3 by default)
 - `ub!my_companies [@user]` - View detailed info about your companies (or another user's)
 - `ub!company_balance ["Company Name"]` - Check your company's balance
@@ -62,7 +62,7 @@ Players can ask naturally OR use commands:
 - `ub!balance` or `/balance [@user]` - Check cash balance (yours or another player's)
 - `ub!transfer_money` or `/transfer_money @user amount` - Transfer money to another user
 
-**🏛️ Tax Information:**
+**�️ Tax Information:**
 - `ub!view_tax` or `/view_tax` - Check current corporate tax rate
 - `ub!set_tax` or `/set_tax percentage` - Adjust tax rate (Admin/Owner only)
 
@@ -203,11 +203,11 @@ Remember: You're here to help and chat, not just recite commands! Make banking f
             return  # Let FrancescaControl handle it
         
         # CHECK 2: Don't respond if user has an active report session IN THIS CHANNEL
-        financial_reports_cog = self.bot.get_cog("FinancialReports")
+        financial_reports_cog = self.bot.get_cog("ReportFiling")
         if financial_reports_cog and message.author.id in financial_reports_cog.active_sessions:
             session = financial_reports_cog.active_sessions[message.author.id]
             if message.channel.id == session.get("channel_id"):
-                return  # Let FinancialReports handle it in this channel
+                return  # Let ReportFiling handle it in this channel
         
         # CHECK 2.5: If user just triggered a filing session, respond with the company name prompt
         file_triggers = [
@@ -227,10 +227,10 @@ Remember: You're here to help and chat, not just recite commands! Make banking f
                     )
                     return
         
-        # CHECK 3: Don't respond if user has paused Francesca
+        # CHECK 3: Don't respond if Francesca is paused in this channel
         francesca_control_cog = self.bot.get_cog("FrancescaControl")
-        if francesca_control_cog and francesca_control_cog.is_user_paused(message.author.id):
-            return  # User has paused responses
+        if francesca_control_cog and francesca_control_cog.is_channel_paused(message.channel.id):
+            return  # Channel has paused responses
         
         # Don't respond to commands
         if message.content.startswith("ub!"):
