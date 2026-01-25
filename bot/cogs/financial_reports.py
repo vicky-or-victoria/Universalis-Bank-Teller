@@ -4,6 +4,7 @@ import os
 import aiohttp
 import random
 import json
+import asyncio
 from typing import Optional
 
 class FinancialReports(commands.Cog):
@@ -453,6 +454,265 @@ class FinancialReports(commands.Cog):
                 value=f"Items: {items_summary}\nGross: ${gross:,.2f}\nNet: ${net:,.2f}\n{timestamp}",
                 inline=False
             )
+        
+        await ctx.send(embed=embed)
+    
+    @commands.hybrid_command(name="disband_company")
+    async def disband_company(self, ctx, *, company_name: str):
+        """Disband your company (WARNING: This is permanent!)
+        
+        Usage: !disband_company "Company Name"
+        """
+        async with self.bot.db.acquire() as conn:
+            # Check if user owns this company
+            company = await conn.fetchrow(
+                "SELECT id, balance, is_public FROM companies WHERE owner_id = $1 AND name = $2",
+                ctx.author.id, company_name
+            )
+            
+            if not company:
+                await ctx.send("❌ You don't own a company with that name!")
+                return
+            
+            company_id = company['id']
+            balance = float(company['balance'])
+            is_public = company['is_public']
+            
+            # Check if company is public
+            if is_public:
+                await ctx.send("❌ You cannot disband a public company! Use `!delist_company` first (Admin only).")
+                return
+            
+            # Confirmation embed
+            confirm_embed = discord.Embed(
+                title="⚠️ Confirm Company Disbandment",
+                description=f"Are you sure you want to disband **{company_name}**?",
+                color=discord.Color.orange()
+            )
+            confirm_embed.add_field(name="Company Balance", value=f"${balance:,.2f} (will be lost)", inline=False)
+            confirm_embed.add_field(name="Reports", value="All financial reports will be deleted", inline=False)
+            confirm_embed.set_footer(text="React with ✅ to confirm or ❌ to cancel (60 seconds)")
+            
+            msg = await ctx.send(embed=confirm_embed)
+            await msg.add_reaction("✅")
+            await msg.add_reaction("❌")
+            
+            def check(reaction, user):
+                return user == ctx.author and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == msg.id
+            
+            try:
+                reaction, user = await self.bot.wait_for("reaction_add", timeout=60.0, check=check)
+                
+                if str(reaction.emoji) == "❌":
+                    await ctx.send("❌ Company disbandment cancelled.")
+                    return
+                
+                # Delete reports first (foreign key constraint)
+                await conn.execute("DELETE FROM reports WHERE company_id = $1", company_id)
+                
+                # Delete company
+                await conn.execute("DELETE FROM companies WHERE id = $1", company_id)
+                
+                success_embed = discord.Embed(
+                    title="🗑️ Company Disbanded",
+                    description=f"**{company_name}** has been permanently disbanded.",
+                    color=discord.Color.red()
+                )
+                success_embed.add_field(name="Balance Lost", value=f"${balance:,.2f}", inline=True)
+                
+                await ctx.send(embed=success_embed)
+                
+            except asyncio.TimeoutError:
+                await ctx.send("⏱️ Confirmation timed out. Company disbandment cancelled.")
+            except Exception as e:
+                await ctx.send(f"❌ Error disbanding company: {e}")
+    
+    @commands.hybrid_command(name="force_disband")
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
+    async def force_disband(self, ctx, user: discord.User, *, company_name: str):
+        """Forcefully disband a player's company (Admin/Owner only)
+        
+        Usage: !force_disband @user "Company Name"
+        """
+        async with self.bot.db.acquire() as conn:
+            # Check if company exists
+            company = await conn.fetchrow(
+                "SELECT id, balance, is_public FROM companies WHERE owner_id = $1 AND name = $2",
+                user.id, company_name
+            )
+            
+            if not company:
+                await ctx.send(f"❌ {user.mention} doesn't own a company named **{company_name}**!")
+                return
+            
+            company_id = company['id']
+            balance = float(company['balance'])
+            is_public = company['is_public']
+            
+            # If public, delist first
+            if is_public:
+                # Get stock info
+                stock = await conn.fetchrow(
+                    "SELECT id, ticker FROM stocks WHERE company_id = $1",
+                    company_id
+                )
+                
+                if stock:
+                    stock_id = stock['id']
+                    ticker = stock['ticker']
+                    
+                    # Delete holdings
+                    await conn.execute("DELETE FROM holdings WHERE stock_id = $1", stock_id)
+                    
+                    # Delete stock
+                    await conn.execute("DELETE FROM stocks WHERE id = $1", stock_id)
+                    
+                    await ctx.send(f"📉 Delisted **{ticker}** before disbanding...")
+            
+            # Delete reports
+            await conn.execute("DELETE FROM reports WHERE company_id = $1", company_id)
+            
+            # Delete company
+            await conn.execute("DELETE FROM companies WHERE id = $1", company_id)
+        
+        embed = discord.Embed(
+            title="🔨 Company Forcefully Disbanded",
+            description=f"**{company_name}** (owned by {user.mention}) has been disbanded by an administrator.",
+            color=discord.Color.red()
+        )
+        embed.add_field(name="Balance Lost", value=f"${balance:,.2f}", inline=True)
+        embed.add_field(name="Was Public", value="Yes" if is_public else "No", inline=True)
+        
+        await ctx.send(embed=embed)
+        
+        # Notify the user
+        try:
+            notify_embed = discord.Embed(
+                title="⚠️ Company Disbanded",
+                description=f"Your company **{company_name}** has been disbanded by an administrator in {ctx.guild.name}.",
+                color=discord.Color.orange()
+            )
+            notify_embed.add_field(name="Balance Lost", value=f"${balance:,.2f}", inline=True)
+            await user.send(embed=notify_embed)
+        except:
+            pass  # DMs disabled
+    
+    @commands.hybrid_command(name="register_company")
+    async def register_company(self, ctx, *, company_name: str):
+        """Register a new company
+        
+        Usage: !register_company "My Company Name"
+        """
+        # Get max companies from StockMarket cog
+        stock_market_cog = self.bot.get_cog("StockMarket")
+        max_companies = stock_market_cog.max_companies if stock_market_cog else 3
+        
+        async with self.bot.db.acquire() as conn:
+            # Check how many companies user owns
+            company_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM companies WHERE owner_id = $1",
+                ctx.author.id
+            )
+            
+            if company_count >= max_companies:
+                await ctx.send(f"❌ You've reached the maximum of **{max_companies}** companies! Disband one to create another.")
+                return
+            
+            # Check if company name already exists
+            existing = await conn.fetchrow(
+                "SELECT id FROM companies WHERE name = $1",
+                company_name
+            )
+            
+            if existing:
+                await ctx.send(f"❌ A company named **{company_name}** already exists!")
+                return
+            
+            # Create company
+            await conn.execute(
+                "INSERT INTO companies (name, owner_id) VALUES ($1, $2)",
+                company_name, ctx.author.id
+            )
+        
+        embed = discord.Embed(
+            title="🏢 Company Registered!",
+            description=f"**{company_name}** has been successfully registered!",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Owner", value=ctx.author.mention, inline=True)
+        embed.add_field(name="Starting Balance", value="$0.00", inline=True)
+        embed.add_field(name="Companies Owned", value=f"{company_count + 1}/{max_companies}", inline=True)
+        embed.set_footer(text="Use !file_report to start earning money!")
+        
+        await ctx.send(embed=embed)
+    
+    @commands.hybrid_command(name="my_companies")
+    async def my_companies(self, ctx, user: discord.User = None):
+        """View detailed information about your companies (or another user's)
+        
+        Usage: !my_companies [@user]
+        """
+        target_user = user or ctx.author
+        
+        async with self.bot.db.acquire() as conn:
+            companies = await conn.fetch(
+                "SELECT name, balance, is_public, created_at FROM companies WHERE owner_id = $1 ORDER BY created_at DESC",
+                target_user.id
+            )
+        
+        if not companies:
+            if target_user == ctx.author:
+                await ctx.send("❌ You don't own any companies! Use `!register_company` to create one.")
+            else:
+                await ctx.send(f"❌ {target_user.mention} doesn't own any companies.")
+            return
+        
+        # Get max companies
+        stock_market_cog = self.bot.get_cog("StockMarket")
+        max_companies = stock_market_cog.max_companies if stock_market_cog else 3
+        
+        if target_user == ctx.author:
+            title = f"🏢 Your Companies ({len(companies)}/{max_companies})"
+        else:
+            title = f"🏢 {target_user.display_name}'s Companies ({len(companies)}/{max_companies})"
+        
+        embed = discord.Embed(
+            title=title,
+            color=discord.Color.blue()
+        )
+        
+        total_balance = 0
+        
+        for company in companies:
+            name = company['name']
+            balance = float(company['balance'])
+            is_public = company['is_public']
+            created_at = company['created_at']
+            
+            total_balance += balance
+            
+            status = "📈 Public" if is_public else "🔒 Private"
+            
+            # Get stock info if public
+            stock_info = ""
+            if is_public:
+                async with self.bot.db.acquire() as conn:
+                    stock = await conn.fetchrow(
+                        "SELECT ticker, price FROM stocks s JOIN companies c ON s.company_id = c.id WHERE c.name = $1",
+                        name
+                    )
+                    if stock:
+                        ticker = stock['ticker']
+                        price = float(stock['price'])
+                        stock_info = f"\nTicker: **{ticker}** | Stock Price: **${price:,.2f}**"
+            
+            embed.add_field(
+                name=f"{status} {name}",
+                value=f"Balance: **${balance:,.2f}**{stock_info}\nFounded: {created_at.strftime('%Y-%m-%d')}",
+                inline=False
+            )
+        
+        embed.set_footer(text=f"Total Company Balance: ${total_balance:,.2f}")
         
         await ctx.send(embed=embed)
 
