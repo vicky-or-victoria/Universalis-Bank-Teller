@@ -45,7 +45,7 @@ class TradingBot(commands.Bot):
         
         await self.init_database()
 
-        # Load all cogs (removed company_events since it's not a cog)
+        # Load all cogs 
         cogs = [
             "cogs.help_system",
             "cogs.chatgpt_responder",
