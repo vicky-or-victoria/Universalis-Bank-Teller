@@ -55,6 +55,8 @@ class TradingBot(commands.Bot):
             "cogs.francesca_control",
             "cogs.short_selling",
             "cogs.tax_system",
+            "cogs.admin_company_tools",  # NEW
+            "cogs.leaderboard",
         ]
 
         for cog in cogs:
@@ -146,7 +148,7 @@ class TradingBot(commands.Bot):
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
-                    balance DECIMAL(15, 2) DEFAULT 50000
+                    balance DECIMAL(15, 2) DEFAULT 25000
                 )
             """)
             
