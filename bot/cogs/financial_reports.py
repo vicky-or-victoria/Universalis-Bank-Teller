@@ -443,7 +443,8 @@ class FinancialReports(commands.Cog):
             )
         
         await ctx.send(embed=embed)
-        @commands.hybrid_command(name="disband_company")
+        
+    @commands.hybrid_command(name="disband_company")
     async def disband_company(self, ctx, company_name: str):
         """Disband your company (WARNING: This is permanent!)"""
         async with self.bot.db.acquire() as conn:
