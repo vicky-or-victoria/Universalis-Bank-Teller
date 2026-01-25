@@ -16,7 +16,7 @@ intents.guilds = True
 class TradingBot(commands.Bot):
     def __init__(self, owner_ids=None):
         super().__init__(
-            command_prefix="!",
+            command_prefix="ub!",
             intents=intents,
             help_command=None,
             owner_ids=owner_ids,
