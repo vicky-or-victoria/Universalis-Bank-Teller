@@ -47,6 +47,7 @@ class TradingBot(commands.Bot):
 
         # Load all cogs
         cogs = [
+            "cogs.help_system",
             "cogs.chatgpt_responder",
             "cogs.company_management",
             "cogs.report_filing",
@@ -145,7 +146,7 @@ class TradingBot(commands.Bot):
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
-                    balance DECIMAL(15, 2) DEFAULT 25000
+                    balance DECIMAL(15, 2) DEFAULT 50000
                 )
             """)
             
