@@ -50,6 +50,32 @@ class FinancialReports(commands.Cog):
         
         return None
     
+    @commands.hybrid_command(name="file_report")
+    async def file_report(self, ctx):
+        """Start filing a financial report
+        
+        Usage: !file_report
+        """
+        if ctx.author.id in self.active_sessions:
+            session = self.active_sessions[ctx.author.id]
+            channel = self.bot.get_channel(session["channel_id"])
+            channel_mention = channel.mention if channel else "another channel"
+            await ctx.send(f"⚠️ You already have an active report session in {channel_mention}! Use !cancel_report to cancel it first.")
+            return
+        
+        # Initialize session
+        self.active_sessions[ctx.author.id] = {
+            "step": "company_name",
+            "company_name": None,
+            "items": [],
+            "channel_id": ctx.channel.id
+        }
+        
+        await ctx.send(
+            "*smiles warmly* Of course! I'd be happy to help you file your financial report!\n\n"
+            "**Please provide your company name:**"
+        )
+    
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Handle report filing conversation and trigger phrases"""
