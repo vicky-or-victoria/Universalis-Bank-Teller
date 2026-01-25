@@ -57,7 +57,7 @@ class ReportFiling(commands.Cog):
             session = self.active_sessions[ctx.author.id]
             channel = self.bot.get_channel(session["channel_id"])
             channel_mention = channel.mention if channel else "another channel"
-            await ctx.send(f"⚠️ You already have an active report session in {channel_mention}! Use `/cancel_report` to cancel it first.")
+            await ctx.send(f"⚠️ You already have an active report session in {channel_mention}! Use `/cancel-report` to cancel it first.")
             return
         
         self.active_sessions[ctx.author.id] = {
@@ -76,142 +76,164 @@ class ReportFiling(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Handle report filing conversation"""
+        # Ignore bot messages
         if message.author.bot:
             return
         
         user_id = message.author.id
         
+        # Check if user has an active session
         if user_id not in self.active_sessions:
             return
         
         session = self.active_sessions[user_id]
         
+        # Only respond in the channel where the session started
         if message.channel.id != session["channel_id"]:
             return
         
+        # Don't process commands
         if message.content.startswith("ub!") or message.content.startswith("/"):
             return
         
-        # Step 1: Get company name
-        if session["step"] == "company_name":
-            company_name = message.content.strip()
-            
-            async with self.bot.db.acquire() as conn:
-                company = await conn.fetchrow(
-                    "SELECT id, ceo_salary_percent FROM companies WHERE owner_id = $1 AND name = $2",
-                    user_id, company_name
-                )
+        # Add debug logging
+        print(f"[REPORT FILING] Processing message from {message.author}: {message.content[:50]}")
+        print(f"[REPORT FILING] Current step: {session['step']}")
+        
+        try:
+            # Step 1: Get company name
+            if session["step"] == "company_name":
+                company_name = message.content.strip()
                 
-                if not company:
-                    await message.reply(f"❌ You don't own a company named **{company_name}**! Create it first with `/register_company`")
-                    del self.active_sessions[user_id]
-                    return
+                print(f"[REPORT FILING] Looking for company: {company_name}")
                 
-                company_id = company['id']
-                
-                # Check cooldown
-                last_report = await conn.fetchrow(
-                    """SELECT reported_at FROM reports 
-                       WHERE company_id = $1 
-                       ORDER BY reported_at DESC 
-                       LIMIT 1""",
-                    company_id
-                )
-                
-                if last_report:
-                    last_report_time = last_report['reported_at']
-                    time_since_last = datetime.now() - last_report_time
-                    cooldown_duration = timedelta(hours=self.report_cooldown_hours)
+                async with self.bot.db.acquire() as conn:
+                    company = await conn.fetchrow(
+                        "SELECT id, ceo_salary_percent FROM companies WHERE owner_id = $1 AND name = $2",
+                        user_id, company_name
+                    )
                     
-                    if time_since_last < cooldown_duration:
-                        time_remaining = cooldown_duration - time_since_last
-                        hours = int(time_remaining.total_seconds() // 3600)
-                        minutes = int((time_remaining.total_seconds() % 3600) // 60)
-                        
-                        embed = discord.Embed(
-                            title="⏰ Company Report Cooldown Active",
-                            description=f"**{company_name}** can file another report in **{hours}h {minutes}m**",
-                            color=discord.Color.orange()
-                        )
-                        embed.add_field(name="Last Report", value=f"{last_report_time.strftime('%Y-%m-%d %H:%M UTC')}", inline=True)
-                        embed.add_field(name="Cooldown Period", value=f"{self.report_cooldown_hours} hours per company", inline=True)
-                        
-                        await message.reply(embed=embed)
+                    if not company:
+                        await message.reply(f"❌ You don't own a company named **{company_name}**! Create it first with `/register-company`")
                         del self.active_sessions[user_id]
                         return
-            
-            session["company_name"] = company_name
-            session["company_id"] = company_id
-            session["ceo_salary_percent"] = float(company['ceo_salary_percent'])
-            session["step"] = "gross_expenses"
-            
-            await message.reply(
-                "**What percentage of your gross revenue goes to expenses?**\n"
-                "This represents operational costs like rent, utilities, supplies, etc.\n"
-                "Enter a percentage (e.g., `35` for 35%):"
-            )
-        
-        # Step 2: Get gross expenses
-        elif session["step"] == "gross_expenses":
-            try:
-                gross_expenses_percent = float(message.content.strip())
-            except ValueError:
-                await message.reply("⚠️ Please enter a valid percentage number!")
-                return
-            
-            if gross_expenses_percent < 0 or gross_expenses_percent > 100:
-                await message.reply("⚠️ Percentage must be between 0 and 100!")
-                return
-            
-            session["gross_expenses_percent"] = gross_expenses_percent
-            session["step"] = "items"
-            
-            await message.reply(
-                "**Now, let's add your products/items:**\n"
-                "Format: `Item Name | Price per unit`\n"
-                "Example: `Widget | 50` or `Premium Service | 120`\n\n"
-                "Type `done` when you've added all items."
-            )
-        
-        # Step 3: Collect items
-        elif session["step"] == "items":
-            content = message.content.strip().lower()
-            
-            if content == "done":
-                if len(session["items"]) == 0:
-                    await message.reply("⚠️ You need to add at least one item! Format: `Item Name | Price`")
-                    return
+                    
+                    company_id = company['id']
+                    
+                    # Check cooldown
+                    last_report = await conn.fetchrow(
+                        """SELECT reported_at FROM reports 
+                           WHERE company_id = $1 
+                           ORDER BY reported_at DESC 
+                           LIMIT 1""",
+                        company_id
+                    )
+                    
+                    if last_report:
+                        last_report_time = last_report['reported_at']
+                        time_since_last = datetime.now() - last_report_time
+                        cooldown_duration = timedelta(hours=self.report_cooldown_hours)
+                        
+                        if time_since_last < cooldown_duration:
+                            time_remaining = cooldown_duration - time_since_last
+                            hours = int(time_remaining.total_seconds() // 3600)
+                            minutes = int((time_remaining.total_seconds() % 3600) // 60)
+                            
+                            embed = discord.Embed(
+                                title="⏰ Company Report Cooldown Active",
+                                description=f"**{company_name}** can file another report in **{hours}h {minutes}m**",
+                                color=discord.Color.orange()
+                            )
+                            embed.add_field(name="Last Report", value=f"{last_report_time.strftime('%Y-%m-%d %H:%M UTC')}", inline=True)
+                            embed.add_field(name="Cooldown Period", value=f"{self.report_cooldown_hours} hours per company", inline=True)
+                            
+                            await message.reply(embed=embed)
+                            del self.active_sessions[user_id]
+                            return
                 
-                await self.process_report(message, session)
-                del self.active_sessions[user_id]
-            else:
-                if "|" not in message.content:
-                    await message.reply("⚠️ Invalid format! Use: `Item Name | Price`")
-                    return
+                # Update session
+                session["company_name"] = company_name
+                session["company_id"] = company_id
+                session["ceo_salary_percent"] = float(company['ceo_salary_percent'])
+                session["step"] = "gross_expenses"
                 
-                parts = message.content.split("|")
-                if len(parts) != 2:
-                    await message.reply("⚠️ Invalid format! Use: `Item Name | Price`")
-                    return
+                print(f"[REPORT FILING] Company found! Moving to gross_expenses step")
                 
-                item_name = parts[0].strip()
+                # Send next prompt
+                await message.reply(
+                    "**What percentage of your gross revenue goes to expenses?**\n"
+                    "This represents operational costs like rent, utilities, supplies, etc.\n"
+                    "Enter a percentage (e.g., `35` for 35%):"
+                )
+            
+            # Step 2: Get gross expenses
+            elif session["step"] == "gross_expenses":
                 try:
-                    price = float(parts[1].strip())
+                    gross_expenses_percent = float(message.content.strip())
                 except ValueError:
-                    await message.reply("⚠️ Price must be a number!")
+                    await message.reply("⚠️ Please enter a valid percentage number!")
                     return
                 
-                if price <= 0:
-                    await message.reply("⚠️ Price must be positive!")
+                if gross_expenses_percent < 0 or gross_expenses_percent > 100:
+                    await message.reply("⚠️ Percentage must be between 0 and 100!")
                     return
                 
-                session["items"].append({
-                    "name": item_name,
-                    "price": price
-                })
+                session["gross_expenses_percent"] = gross_expenses_percent
+                session["step"] = "items"
                 
-                await message.add_reaction("✅")
-                await message.reply(f"Added **{item_name}** at **${price:.2f}** per unit. Add more or type `done`.")
+                await message.reply(
+                    "**Now, let's add your products/items:**\n"
+                    "Format: `Item Name | Price per unit`\n"
+                    "Example: `Widget | 50` or `Premium Service | 120`\n\n"
+                    "Type `done` when you've added all items."
+                )
+            
+            # Step 3: Collect items
+            elif session["step"] == "items":
+                content = message.content.strip().lower()
+                
+                if content == "done":
+                    if len(session["items"]) == 0:
+                        await message.reply("⚠️ You need to add at least one item! Format: `Item Name | Price`")
+                        return
+                    
+                    # Process the report
+                    await self.process_report(message, session)
+                    del self.active_sessions[user_id]
+                else:
+                    if "|" not in message.content:
+                        await message.reply("⚠️ Invalid format! Use: `Item Name | Price`")
+                        return
+                    
+                    parts = message.content.split("|")
+                    if len(parts) != 2:
+                        await message.reply("⚠️ Invalid format! Use: `Item Name | Price`")
+                        return
+                    
+                    item_name = parts[0].strip()
+                    try:
+                        price = float(parts[1].strip())
+                    except ValueError:
+                        await message.reply("⚠️ Price must be a number!")
+                        return
+                    
+                    if price <= 0:
+                        await message.reply("⚠️ Price must be positive!")
+                        return
+                    
+                    session["items"].append({
+                        "name": item_name,
+                        "price": price
+                    })
+                    
+                    await message.add_reaction("✅")
+                    await message.reply(f"Added **{item_name}** at **${price:.2f}** per unit. Add more or type `done`.")
+        
+        except Exception as e:
+            print(f"[REPORT FILING ERROR] {e}")
+            await message.reply(f"❌ An error occurred: {e}\nPlease try again or use `/cancel-report`")
+            if user_id in self.active_sessions:
+                del self.active_sessions[user_id]
     
     async def process_report(self, message: discord.Message, session: dict):
         """Process the financial report with all calculations"""
@@ -390,7 +412,7 @@ class ReportFiling(commands.Cog):
             embed.add_field(name="Status", value="Adding items (type 'done' when finished)", inline=False)
         
         embed.add_field(name="Channel", value=channel.mention if channel else "Unknown", inline=False)
-        embed.set_footer(text="Use /cancel_report to cancel")
+        embed.set_footer(text="Use /cancel-report to cancel")
         
         await ctx.send(embed=embed)
     
