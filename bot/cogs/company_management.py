@@ -48,7 +48,7 @@ class CompanyManagement(commands.Cog):
         embed.add_field(name="Starting Balance", value="$0.00", inline=True)
         embed.add_field(name="CEO Salary", value="5.00%", inline=True)
         embed.add_field(name="Companies Owned", value=f"{company_count + 1}/{max_companies}", inline=True)
-        embed.set_footer(text="Use /file_report to start earning money!")
+        embed.set_footer(text="Use /file-report to start earning money!")
         
         await ctx.send(embed=embed)
     
@@ -92,7 +92,7 @@ class CompanyManagement(commands.Cog):
     async def set_ceo_salary(self, ctx, company_name: str, percentage: float):
         """Set your CEO salary percentage for a company
         
-        Usage: /set_ceo_salary "My Company" 7.5
+        Usage: /set-ceo-salary "My Company" 7.5
         """
         if percentage < 0 or percentage > 100:
             await ctx.send("❌ Percentage must be between 0 and 100!")
@@ -126,7 +126,7 @@ class CompanyManagement(commands.Cog):
         
         await ctx.send(embed=embed)
     
-    @commands.hybrid_command(name="my_companies")
+    @commands.hybrid_command(name="my-companies")  # Changed from my_companies
     async def my_companies(self, ctx, user: discord.User = None):
         """View detailed information about your companies (or another user's)"""
         target_user = user or ctx.author
@@ -139,7 +139,7 @@ class CompanyManagement(commands.Cog):
         
         if not companies:
             if target_user == ctx.author:
-                await ctx.send("❌ You don't own any companies! Use `/register_company` to create one.")
+                await ctx.send("❌ You don't own any companies! Use `/register-company` to create one.")
             else:
                 await ctx.send(f"❌ {target_user.mention} doesn't own any companies.")
             return
@@ -210,7 +210,7 @@ class CompanyManagement(commands.Cog):
             is_public = company['is_public']
             
             if is_public:
-                await ctx.send("❌ You cannot disband a public company! Use `/delist_company` first (Admin only).")
+                await ctx.send("❌ You cannot disband a public company! Use `/delist-company` first (Admin only).")
                 return
             
             confirm_embed = discord.Embed(
