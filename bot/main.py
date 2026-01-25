@@ -56,7 +56,8 @@ class TradingBot(commands.Bot):
             "cogs.short_selling",
             "cogs.tax_system",
             "cogs.admin_company_tools",  # NEW
-            "cogs.leaderboard",
+            "cogs.leaderboard"
+            "cogs.company_events",
         ]
 
         for cog in cogs:
