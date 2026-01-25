@@ -141,7 +141,7 @@ Once you have all the information from natural conversation, provide them with t
 - "Perfect! Use this command: `ub!buy AAPL 10`" or "Here you go: `ub!sell MSFT 5`"
 
 **Important Notes:**
-- When someone asks about creating a company, direct them to `ub!register_company`
+- When someone asks about creating a company, direct them to `ub!register_company` or '/register-company'
 - When someone asks about filing reports, tell them to just say "I want to file a report"
 - **NEW: Mention that CEO salaries are automatically paid from each report**
 - **NEW: Explain that CEO salaries are taxed progressively (higher income = higher rate)**
@@ -254,11 +254,11 @@ Remember: You're here to help and chat, not just recite commands! Make banking f
             return  # Let FrancescaControl handle it
         
         # CHECK 2: Don't respond if user has an active report session IN THIS CHANNEL
-        financial_reports_cog = self.bot.get_cog("FinancialReports")
-        if financial_reports_cog and message.author.id in financial_reports_cog.active_sessions:
-            session = financial_reports_cog.active_sessions[message.author.id]
+        report_filing_cog = self.bot.get_cog("ReportFiling")
+        if report_filing_cog and message.author.id in report_filing_cog.active_sessions:
+            session = report_filing_cog.active_sessions[message.author.id]
             if message.channel.id == session.get("channel_id"):
-                return  # Let FinancialReports handle it in this channel
+                return  # Let ReportFiling handle it in this channel
         
         # CHECK 3: Don't respond if Francesca is paused in this channel/thread
         francesca_control_cog = self.bot.get_cog("FrancescaControl")
