@@ -6,6 +6,7 @@ import random
 import json
 import asyncio
 from typing import Optional
+from datetime import datetime, timedelta
 
 class FinancialReports(commands.Cog):
     """ChatGPT-assisted financial reports with dice rolls"""
@@ -18,6 +19,9 @@ class FinancialReports(commands.Cog):
         
         # Tax rate (can be adjusted by admins)
         self.tax_rate = 0.25  # 25% default
+        
+        # Report cooldown in hours (can be adjusted by admins)
+        self.report_cooldown_hours = 48  # 48 hours (2 days) default
         
         # Active report sessions (user_id -> session_data)
         self.active_sessions = {}
@@ -57,12 +61,48 @@ class FinancialReports(commands.Cog):
         
         Usage: !file_report
         """
+        # Check for active session
         if ctx.author.id in self.active_sessions:
             session = self.active_sessions[ctx.author.id]
             channel = self.bot.get_channel(session["channel_id"])
             channel_mention = channel.mention if channel else "another channel"
             await ctx.send(f"⚠️ You already have an active report session in {channel_mention}! Use !cancel_report to cancel it first.")
             return
+        
+        # Check cooldown
+        async with self.bot.db.acquire() as conn:
+            # Get the user's most recent report
+            last_report = await conn.fetchrow(
+                """SELECT r.reported_at 
+                   FROM reports r
+                   JOIN companies c ON r.company_id = c.id
+                   WHERE c.owner_id = $1
+                   ORDER BY r.reported_at DESC
+                   LIMIT 1""",
+                ctx.author.id
+            )
+            
+            if last_report:
+                last_report_time = last_report['reported_at']
+                time_since_last = datetime.now() - last_report_time
+                cooldown_duration = timedelta(hours=self.report_cooldown_hours)
+                
+                if time_since_last < cooldown_duration:
+                    time_remaining = cooldown_duration - time_since_last
+                    hours = int(time_remaining.total_seconds() // 3600)
+                    minutes = int((time_remaining.total_seconds() % 3600) // 60)
+                    
+                    embed = discord.Embed(
+                        title="⏰ Report Cooldown Active",
+                        description=f"You can file another report in **{hours}h {minutes}m**",
+                        color=discord.Color.orange()
+                    )
+                    embed.add_field(name="Last Report", value=f"{last_report_time.strftime('%Y-%m-%d %H:%M UTC')}", inline=True)
+                    embed.add_field(name="Cooldown Period", value=f"{self.report_cooldown_hours} hours", inline=True)
+                    embed.set_footer(text="Admins can adjust this cooldown with !set_report_cooldown")
+                    
+                    await ctx.send(embed=embed)
+                    return
         
         # Initialize session
         self.active_sessions[ctx.author.id] = {
@@ -715,6 +755,135 @@ class FinancialReports(commands.Cog):
         embed.set_footer(text=f"Total Company Balance: ${total_balance:,.2f}")
         
         await ctx.send(embed=embed)
+    
+    @commands.hybrid_command(name="set_report_cooldown")
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
+    async def set_report_cooldown(self, ctx, hours: int):
+        """Set the cooldown period between financial reports (Admin/Owner only)
+        
+        Usage: !set_report_cooldown 48 (for 48 hours)
+        """
+        if hours < 0:
+            await ctx.send("❌ Cooldown hours must be 0 or greater!")
+            return
+        
+        if hours > 168:  # 1 week
+            await ctx.send("❌ Cooldown cannot exceed 168 hours (1 week)!")
+            return
+        
+        old_cooldown = self.report_cooldown_hours
+        self.report_cooldown_hours = hours
+        
+        embed = discord.Embed(
+            title="⏰ Report Cooldown Updated",
+            description=f"Players can now file reports every **{hours} hours**",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Previous Cooldown", value=f"{old_cooldown} hours", inline=True)
+        embed.add_field(name="New Cooldown", value=f"{hours} hours", inline=True)
+        
+        if hours == 0:
+            embed.add_field(name="⚠️ Warning", value="Cooldown is disabled! Players can file unlimited reports.", inline=False)
+        
+        await ctx.send(embed=embed)
+    
+    @commands.hybrid_command(name="view_report_cooldown")
+    async def view_report_cooldown(self, ctx):
+        """View the current report cooldown period"""
+        embed = discord.Embed(
+            title="⏰ Report Cooldown Period",
+            description=f"**{self.report_cooldown_hours} hours** ({self.report_cooldown_hours / 24:.1f} days)",
+            color=discord.Color.blue()
+        )
+        
+        if self.report_cooldown_hours == 0:
+            embed.add_field(name="Status", value="⚠️ Cooldown is disabled", inline=False)
+        
+        # Check user's next available time
+        async with self.bot.db.acquire() as conn:
+            last_report = await conn.fetchrow(
+                """SELECT r.reported_at 
+                   FROM reports r
+                   JOIN companies c ON r.company_id = c.id
+                   WHERE c.owner_id = $1
+                   ORDER BY r.reported_at DESC
+                   LIMIT 1""",
+                ctx.author.id
+            )
+            
+            if last_report:
+                last_report_time = last_report['reported_at']
+                next_available = last_report_time + timedelta(hours=self.report_cooldown_hours)
+                time_remaining = next_available - datetime.now()
+                
+                if time_remaining.total_seconds() > 0:
+                    hours = int(time_remaining.total_seconds() // 3600)
+                    minutes = int((time_remaining.total_seconds() % 3600) // 60)
+                    embed.add_field(
+                        name="Your Next Report Available",
+                        value=f"In **{hours}h {minutes}m**\n({next_available.strftime('%Y-%m-%d %H:%M UTC')})",
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="Your Next Report Available",
+                        value="✅ Available now!",
+                        inline=False
+                    )
+        
+        await ctx.send(embed=embed)
+    
+    @commands.hybrid_command(name="bypass_cooldown")
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
+    async def bypass_cooldown(self, ctx, user: discord.User):
+        """Reset a user's report cooldown (Admin/Owner only)
+        
+        Usage: !bypass_cooldown @user
+        """
+        async with self.bot.db.acquire() as conn:
+            # Get the user's most recent report
+            last_report = await conn.fetchrow(
+                """SELECT r.id, r.reported_at, c.name
+                   FROM reports r
+                   JOIN companies c ON r.company_id = c.id
+                   WHERE c.owner_id = $1
+                   ORDER BY r.reported_at DESC
+                   LIMIT 1""",
+                user.id
+            )
+            
+            if not last_report:
+                await ctx.send(f"ℹ️ {user.mention} hasn't filed any reports yet!")
+                return
+            
+            # Update the timestamp to be old enough to bypass cooldown
+            old_timestamp = datetime.now() - timedelta(hours=self.report_cooldown_hours + 1)
+            
+            await conn.execute(
+                "UPDATE reports SET reported_at = $1 WHERE id = $2",
+                old_timestamp, last_report['id']
+            )
+        
+        embed = discord.Embed(
+            title="✅ Cooldown Bypassed",
+            description=f"{user.mention} can now file a report immediately!",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Previous Report", value=last_report['reported_at'].strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+        embed.add_field(name="Company", value=last_report['name'], inline=True)
+        
+        await ctx.send(embed=embed)
+        
+        # Notify the user
+        try:
+            notify_embed = discord.Embed(
+                title="⏰ Report Cooldown Reset",
+                description=f"An administrator has reset your report cooldown in {ctx.guild.name}. You can file a report now!",
+                color=discord.Color.green()
+            )
+            await user.send(embed=notify_embed)
+        except:
+            pass  # DMs disabled
 
 
 async def setup(bot):
