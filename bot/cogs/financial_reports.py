@@ -14,7 +14,6 @@ class FinancialReports(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.api_key = os.getenv("OPENAI_API_KEY")
-        # Default to gpt-4o-mini if not specified
         self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         
         # Tax rate (can be adjusted by admins)
@@ -59,14 +58,14 @@ class FinancialReports(commands.Cog):
     async def file_report(self, ctx):
         """Start filing a financial report
         
-        Usage: ub!file_report
+        Usage: /file_report or ub!file_report
         """
         # Check for active session
         if ctx.author.id in self.active_sessions:
             session = self.active_sessions[ctx.author.id]
             channel = self.bot.get_channel(session["channel_id"])
             channel_mention = channel.mention if channel else "another channel"
-            await ctx.send(f"⚠️ You already have an active report session in {channel_mention}! Use ub!cancel_report to cancel it first.")
+            await ctx.send(f"⚠️ You already have an active report session in {channel_mention}! Use `/cancel_report` to cancel it first.")
             return
         
         # Initialize session - we'll check cooldown after they select a company
@@ -84,172 +83,127 @@ class FinancialReports(commands.Cog):
     
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Handle report filing conversation and trigger phrases"""
+        """Handle report filing conversation - NO trigger phrases, only active sessions"""
         if message.author.bot:
             return
         
-        content_lower = message.content.strip().lower()
         user_id = message.author.id
         
-        # Check if user has an active session
-        has_active_session = user_id in self.active_sessions
+        # ONLY handle if user has an active session
+        if user_id not in self.active_sessions:
+            return  # Exit immediately - no trigger phrases
         
-        # If they have an active session, handle it
-        if has_active_session:
-            session = self.active_sessions[user_id]
+        session = self.active_sessions[user_id]
+        
+        # IMPORTANT: Only respond in the channel where the session started
+        if message.channel.id != session["channel_id"]:
+            return
+        
+        # Don't process commands
+        if message.content.startswith("ub!") or message.content.startswith("/"):
+            return
+        
+        # Step 1: Get company name
+        if session["step"] == "company_name":
+            company_name = message.content.strip()
             
-            # IMPORTANT: Only respond in the channel where the session started
-            if message.channel.id != session["channel_id"]:
-                return  # Ignore messages in other channels
-            
-            # Don't process commands
-            if message.content.startswith("ub!"):
-                return
-            
-            # Step 1: Get company name
-            if session["step"] == "company_name":
-                company_name = message.content.strip()
+            # Check if company exists and get its ID
+            async with self.bot.db.acquire() as conn:
+                company = await conn.fetchrow(
+                    "SELECT id FROM companies WHERE owner_id = $1 AND name = $2",
+                    user_id, company_name
+                )
                 
-                # Check if company exists and get its ID
-                async with self.bot.db.acquire() as conn:
-                    company = await conn.fetchrow(
-                        "SELECT id FROM companies WHERE owner_id = $1 AND name = $2",
-                        user_id, company_name
-                    )
+                if not company:
+                    await message.reply(f"❌ You don't own a company named **{company_name}**! Create it first with `/register_company`")
+                    del self.active_sessions[user_id]
+                    return
+                
+                company_id = company['id']
+                
+                # NOW check cooldown for THIS specific company
+                last_report = await conn.fetchrow(
+                    """SELECT reported_at FROM reports 
+                       WHERE company_id = $1 
+                       ORDER BY reported_at DESC 
+                       LIMIT 1""",
+                    company_id
+                )
+                
+                if last_report:
+                    last_report_time = last_report['reported_at']
+                    time_since_last = datetime.now() - last_report_time
+                    cooldown_duration = timedelta(hours=self.report_cooldown_hours)
                     
-                    if not company:
-                        await message.reply(f"❌ You don't own a company named **{company_name}**! Create it first with `ub!register_company \"{company_name}\"`")
+                    if time_since_last < cooldown_duration:
+                        time_remaining = cooldown_duration - time_since_last
+                        hours = int(time_remaining.total_seconds() // 3600)
+                        minutes = int((time_remaining.total_seconds() % 3600) // 60)
+                        
+                        embed = discord.Embed(
+                            title="⏰ Company Report Cooldown Active",
+                            description=f"**{company_name}** can file another report in **{hours}h {minutes}m**",
+                            color=discord.Color.orange()
+                        )
+                        embed.add_field(name="Last Report", value=f"{last_report_time.strftime('%Y-%m-%d %H:%M UTC')}", inline=True)
+                        embed.add_field(name="Cooldown Period", value=f"{self.report_cooldown_hours} hours per company", inline=True)
+                        embed.set_footer(text="Try a different company or wait for the cooldown to expire")
+                        
+                        await message.reply(embed=embed)
                         del self.active_sessions[user_id]
                         return
-                    
-                    company_id = company['id']
-                    
-                    # NOW check cooldown for THIS specific company
-                    last_report = await conn.fetchrow(
-                        """SELECT reported_at FROM reports 
-                           WHERE company_id = $1 
-                           ORDER BY reported_at DESC 
-                           LIMIT 1""",
-                        company_id
-                    )
-                    
-                    if last_report:
-                        last_report_time = last_report['reported_at']
-                        time_since_last = datetime.now() - last_report_time
-                        cooldown_duration = timedelta(hours=self.report_cooldown_hours)
-                        
-                        if time_since_last < cooldown_duration:
-                            time_remaining = cooldown_duration - time_since_last
-                            hours = int(time_remaining.total_seconds() // 3600)
-                            minutes = int((time_remaining.total_seconds() % 3600) // 60)
-                            
-                            embed = discord.Embed(
-                                title="⏰ Company Report Cooldown Active",
-                                description=f"**{company_name}** can file another report in **{hours}h {minutes}m**",
-                                color=discord.Color.orange()
-                            )
-                            embed.add_field(name="Last Report", value=f"{last_report_time.strftime('%Y-%m-%d %H:%M UTC')}", inline=True)
-                            embed.add_field(name="Cooldown Period", value=f"{self.report_cooldown_hours} hours per company", inline=True)
-                            embed.set_footer(text="Try a different company or wait for the cooldown to expire")
-                            
-                            await message.reply(embed=embed)
-                            del self.active_sessions[user_id]
-                            return
-                
-                session["company_name"] = company_name
-                session["step"] = "items"
-                
-                await message.reply(
-                    "**Now, let's add your products/items:**\n"
-                    "Format: `Item Name | Price per unit`\n"
-                    "Example: `Widget | 50` or `Premium Service | 120`\n\n"
-                    "Type `done` when you've added all items."
-                )
             
-            # Step 2: Collect items
-            elif session["step"] == "items":
-                content = message.content.strip().lower()
-                
-                if content == "done":
-                    if len(session["items"]) == 0:
-                        await message.reply("⚠️ You need to add at least one item! Format: `Item Name | Price`")
-                        return
-                    
-                    # Process the report
-                    await self.process_report(message, session)
-                    del self.active_sessions[user_id]
-                else:
-                    # Parse item
-                    if "|" not in message.content:
-                        await message.reply("⚠️ Invalid format! Use: `Item Name | Price`")
-                        return
-                    
-                    parts = message.content.split("|")
-                    if len(parts) != 2:
-                        await message.reply("⚠️ Invalid format! Use: `Item Name | Price`")
-                        return
-                    
-                    item_name = parts[0].strip()
-                    try:
-                        price = float(parts[1].strip())
-                    except ValueError:
-                        await message.reply("⚠️ Price must be a number!")
-                        return
-                    
-                    if price <= 0:
-                        await message.reply("⚠️ Price must be positive!")
-                        return
-                    
-                    session["items"].append({
-                        "name": item_name,
-                        "price": price
-                    })
-                    
-                    await message.add_reaction("✅")
-                    await message.reply(f"Added **{item_name}** at **${price:.2f}** per unit. Add more or type `done`.")
+            session["company_name"] = company_name
+            session["step"] = "items"
             
-            return  # Exit after handling active session
+            await message.reply(
+                "**Now, let's add your products/items:**\n"
+                "Format: `Item Name | Price per unit`\n"
+                "Example: `Widget | 50` or `Premium Service | 120`\n\n"
+                "Type `done` when you've added all items."
+            )
         
-        # If no active session, check for trigger phrases to start filing
-        # Trigger phrases that indicate user wants to file a report
-        file_triggers = [
-            "file report", "file a report", "make a report", "create a report",
-            "submit report", "submit a report", "i want to file", "id like to file",
-            "file my report", "start a report", "new report"
-        ]
-        
-        # Check if message contains any trigger phrase
-        should_start_filing = any(trigger in content_lower for trigger in file_triggers)
-        
-        if should_start_filing:
-            # Don't start if it's a command
-            if message.content.startswith("ub!"):
-                return
+        # Step 2: Collect items
+        elif session["step"] == "items":
+            content = message.content.strip().lower()
             
-            # Check if in responder channel - if so, let ChatGPT handle the greeting naturally
-            chatgpt_cog = self.bot.get_cog("ChatGPTResponder")
-            in_responder_channel = False
-            
-            if chatgpt_cog:
-                if message.channel.id == chatgpt_cog.responder_channel_id:
-                    in_responder_channel = True
-                elif isinstance(message.channel, discord.Thread) and message.channel.parent_id == chatgpt_cog.forum_channel_id:
-                    in_responder_channel = True
-            
-            # Initialize session
-            self.active_sessions[user_id] = {
-                "step": "company_name",
-                "company_name": None,
-                "items": [],
-                "channel_id": message.channel.id
-            }
-            
-            # Only send manual greeting if NOT in a responder channel
-            if not in_responder_channel:
-                await message.reply(
-                    "*smiles warmly* Of course! I'd be happy to help you file your financial report!\n\n"
-                    "**Please provide your company name:**"
-                )
+            if content == "done":
+                if len(session["items"]) == 0:
+                    await message.reply("⚠️ You need to add at least one item! Format: `Item Name | Price`")
+                    return
+                
+                # Process the report
+                await self.process_report(message, session)
+                del self.active_sessions[user_id]
+            else:
+                # Parse item
+                if "|" not in message.content:
+                    await message.reply("⚠️ Invalid format! Use: `Item Name | Price`")
+                    return
+                
+                parts = message.content.split("|")
+                if len(parts) != 2:
+                    await message.reply("⚠️ Invalid format! Use: `Item Name | Price`")
+                    return
+                
+                item_name = parts[0].strip()
+                try:
+                    price = float(parts[1].strip())
+                except ValueError:
+                    await message.reply("⚠️ Price must be a number!")
+                    return
+                
+                if price <= 0:
+                    await message.reply("⚠️ Price must be positive!")
+                    return
+                
+                session["items"].append({
+                    "name": item_name,
+                    "price": price
+                })
+                
+                await message.add_reaction("✅")
+                await message.reply(f"Added **{item_name}** at **${price:.2f}** per unit. Add more or type `done`.")
     
     async def process_report(self, message: discord.Message, session: dict):
         """Process the financial report with dice rolls"""
@@ -369,12 +323,12 @@ class FinancialReports(commands.Cog):
             embed.add_field(name="Status", value="Adding items (type 'done' when finished)", inline=False)
         
         embed.add_field(name="Channel", value=channel.mention if channel else "Unknown", inline=False)
-        embed.set_footer(text="Use ub!cancel_report to cancel this session")
+        embed.set_footer(text="Use /cancel_report to cancel this session")
         
         await ctx.send(embed=embed)
     
     @commands.hybrid_command(name="company_balance")
-    async def company_balance(self, ctx, *, company_name: str = None):
+    async def company_balance(self, ctx, company_name: str = None):
         """Check your company's balance"""
         async with self.bot.db.acquire() as conn:
             if company_name:
@@ -411,10 +365,7 @@ class FinancialReports(commands.Cog):
     @commands.hybrid_command(name="set_tax")
     @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
     async def set_tax(self, ctx, tax_percentage: float):
-        """Set the tax rate for financial reports (Admin/Owner only)
-        
-        Usage: ub!set_tax 20 (for 20%)
-        """
+        """Set the tax rate for financial reports (Admin/Owner only)"""
         if tax_percentage < 0 or tax_percentage > 100:
             await ctx.send("❌ Tax percentage must be between 0 and 100!")
             return
@@ -446,7 +397,7 @@ class FinancialReports(commands.Cog):
         await ctx.send(embed=embed)
     
     @commands.hybrid_command(name="view_reports")
-    async def view_reports(self, ctx, *, company_name: str):
+    async def view_reports(self, ctx, company_name: str):
         """View financial reports for your company"""
         async with self.bot.db.acquire() as conn:
             company = await conn.fetchrow(
@@ -492,15 +443,10 @@ class FinancialReports(commands.Cog):
             )
         
         await ctx.send(embed=embed)
-    
-    @commands.hybrid_command(name="disband_company")
-    async def disband_company(self, ctx, *, company_name: str):
-        """Disband your company (WARNING: This is permanent!)
-        
-        Usage: ub!disband_company "Company Name"
-        """
+        @commands.hybrid_command(name="disband_company")
+    async def disband_company(self, ctx, company_name: str):
+        """Disband your company (WARNING: This is permanent!)"""
         async with self.bot.db.acquire() as conn:
-            # Check if user owns this company
             company = await conn.fetchrow(
                 "SELECT id, balance, is_public FROM companies WHERE owner_id = $1 AND name = $2",
                 ctx.author.id, company_name
@@ -514,12 +460,10 @@ class FinancialReports(commands.Cog):
             balance = float(company['balance'])
             is_public = company['is_public']
             
-            # Check if company is public
             if is_public:
-                await ctx.send("❌ You cannot disband a public company! Use `ub!delist_company` first (Admin only).")
+                await ctx.send("❌ You cannot disband a public company! Use `/delist_company` first (Admin only).")
                 return
             
-            # Confirmation embed
             confirm_embed = discord.Embed(
                 title="⚠️ Confirm Company Disbandment",
                 description=f"Are you sure you want to disband **{company_name}**?",
@@ -543,10 +487,7 @@ class FinancialReports(commands.Cog):
                     await ctx.send("❌ Company disbandment cancelled.")
                     return
                 
-                # Delete reports first (foreign key constraint)
                 await conn.execute("DELETE FROM reports WHERE company_id = $1", company_id)
-                
-                # Delete company
                 await conn.execute("DELETE FROM companies WHERE id = $1", company_id)
                 
                 success_embed = discord.Embed(
@@ -560,18 +501,12 @@ class FinancialReports(commands.Cog):
                 
             except asyncio.TimeoutError:
                 await ctx.send("⏱️ Confirmation timed out. Company disbandment cancelled.")
-            except Exception as e:
-                await ctx.send(f"❌ Error disbanding company: {e}")
     
     @commands.hybrid_command(name="force_disband")
     @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
-    async def force_disband(self, ctx, user: discord.User, *, company_name: str):
-        """Forcefully disband a player's company (Admin/Owner only)
-        
-        Usage: ub!force_disband @user "Company Name"
-        """
+    async def force_disband(self, ctx, user: discord.User, company_name: str):
+        """Forcefully disband a player's company (Admin/Owner only)"""
         async with self.bot.db.acquire() as conn:
-            # Check if company exists
             company = await conn.fetchrow(
                 "SELECT id, balance, is_public FROM companies WHERE owner_id = $1 AND name = $2",
                 user.id, company_name
@@ -585,9 +520,7 @@ class FinancialReports(commands.Cog):
             balance = float(company['balance'])
             is_public = company['is_public']
             
-            # If public, delist first
             if is_public:
-                # Get stock info
                 stock = await conn.fetchrow(
                     "SELECT id, ticker FROM stocks WHERE company_id = $1",
                     company_id
@@ -596,19 +529,11 @@ class FinancialReports(commands.Cog):
                 if stock:
                     stock_id = stock['id']
                     ticker = stock['ticker']
-                    
-                    # Delete holdings
                     await conn.execute("DELETE FROM holdings WHERE stock_id = $1", stock_id)
-                    
-                    # Delete stock
                     await conn.execute("DELETE FROM stocks WHERE id = $1", stock_id)
-                    
                     await ctx.send(f"📉 Delisted **{ticker}** before disbanding...")
             
-            # Delete reports
             await conn.execute("DELETE FROM reports WHERE company_id = $1", company_id)
-            
-            # Delete company
             await conn.execute("DELETE FROM companies WHERE id = $1", company_id)
         
         embed = discord.Embed(
@@ -620,31 +545,14 @@ class FinancialReports(commands.Cog):
         embed.add_field(name="Was Public", value="Yes" if is_public else "No", inline=True)
         
         await ctx.send(embed=embed)
-        
-        # Notify the user
-        try:
-            notify_embed = discord.Embed(
-                title="⚠️ Company Disbanded",
-                description=f"Your company **{company_name}** has been disbanded by an administrator in {ctx.guild.name}.",
-                color=discord.Color.orange()
-            )
-            notify_embed.add_field(name="Balance Lost", value=f"${balance:,.2f}", inline=True)
-            await user.send(embed=notify_embed)
-        except:
-            pass  # DMs disabled
     
     @commands.hybrid_command(name="register_company")
-    async def register_company(self, ctx, *, company_name: str):
-        """Register a new company
-        
-        Usage: ub!register_company "My Company Name"
-        """
-        # Get max companies from StockMarket cog
+    async def register_company(self, ctx, company_name: str):
+        """Register a new company"""
         stock_market_cog = self.bot.get_cog("StockMarket")
         max_companies = stock_market_cog.max_companies if stock_market_cog else 3
         
         async with self.bot.db.acquire() as conn:
-            # Check how many companies user owns
             company_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM companies WHERE owner_id = $1",
                 ctx.author.id
@@ -654,7 +562,6 @@ class FinancialReports(commands.Cog):
                 await ctx.send(f"❌ You've reached the maximum of **{max_companies}** companies! Disband one to create another.")
                 return
             
-            # Check if company name already exists
             existing = await conn.fetchrow(
                 "SELECT id FROM companies WHERE name = $1",
                 company_name
@@ -664,7 +571,6 @@ class FinancialReports(commands.Cog):
                 await ctx.send(f"❌ A company named **{company_name}** already exists!")
                 return
             
-            # Create company
             await conn.execute(
                 "INSERT INTO companies (name, owner_id) VALUES ($1, $2)",
                 company_name, ctx.author.id
@@ -678,16 +584,13 @@ class FinancialReports(commands.Cog):
         embed.add_field(name="Owner", value=ctx.author.mention, inline=True)
         embed.add_field(name="Starting Balance", value="$0.00", inline=True)
         embed.add_field(name="Companies Owned", value=f"{company_count + 1}/{max_companies}", inline=True)
-        embed.set_footer(text="Use ub!file_report to start earning money!")
+        embed.set_footer(text="Use /file_report to start earning money!")
         
         await ctx.send(embed=embed)
     
     @commands.hybrid_command(name="my_companies")
     async def my_companies(self, ctx, user: discord.User = None):
-        """View detailed information about your companies (or another user's)
-        
-        Usage: ub!my_companies [@user]
-        """
+        """View detailed information about your companies (or another user's)"""
         target_user = user or ctx.author
         
         async with self.bot.db.acquire() as conn:
@@ -698,12 +601,11 @@ class FinancialReports(commands.Cog):
         
         if not companies:
             if target_user == ctx.author:
-                await ctx.send("❌ You don't own any companies! Use `ub!register_company` to create one.")
+                await ctx.send("❌ You don't own any companies! Use `/register_company` to create one.")
             else:
                 await ctx.send(f"❌ {target_user.mention} doesn't own any companies.")
             return
         
-        # Get max companies
         stock_market_cog = self.bot.get_cog("StockMarket")
         max_companies = stock_market_cog.max_companies if stock_market_cog else 3
         
@@ -729,7 +631,6 @@ class FinancialReports(commands.Cog):
             
             status = "📈 Public" if is_public else "🔒 Private"
             
-            # Get stock info if public
             stock_info = ""
             if is_public:
                 async with self.bot.db.acquire() as conn:
@@ -755,15 +656,12 @@ class FinancialReports(commands.Cog):
     @commands.hybrid_command(name="set_report_cooldown")
     @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
     async def set_report_cooldown(self, ctx, hours: int):
-        """Set the cooldown period between financial reports (Admin/Owner only)
-        
-        Usage: ub!set_report_cooldown 48 (for 48 hours)
-        """
+        """Set the cooldown period between financial reports (Admin/Owner only)"""
         if hours < 0:
             await ctx.send("❌ Cooldown hours must be 0 or greater!")
             return
         
-        if hours > 168:  # 1 week
+        if hours > 168:
             await ctx.send("❌ Cooldown cannot exceed 168 hours (1 week)!")
             return
         
@@ -795,7 +693,6 @@ class FinancialReports(commands.Cog):
         if self.report_cooldown_hours == 0:
             embed.add_field(name="Status", value="⚠️ Cooldown is disabled", inline=False)
         
-        # Get all user's companies and their cooldown status
         async with self.bot.db.acquire() as conn:
             companies = await conn.fetch(
                 "SELECT id, name FROM companies WHERE owner_id = $1 ORDER BY name",
@@ -841,13 +738,9 @@ class FinancialReports(commands.Cog):
     
     @commands.hybrid_command(name="bypass_cooldown")
     @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
-    async def bypass_cooldown(self, ctx, user: discord.User, *, company_name: str):
-        """Reset a company's report cooldown (Admin/Owner only)
-        
-        Usage: ub!bypass_cooldown @user "Company Name"
-        """
+    async def bypass_cooldown(self, ctx, user: discord.User, company_name: str):
+        """Reset a company's report cooldown (Admin/Owner only)"""
         async with self.bot.db.acquire() as conn:
-            # Get the company
             company = await conn.fetchrow(
                 "SELECT id, name FROM companies WHERE owner_id = $1 AND name = $2",
                 user.id, company_name
@@ -859,7 +752,6 @@ class FinancialReports(commands.Cog):
             
             company_id = company['id']
             
-            # Get the company's most recent report
             last_report = await conn.fetchrow(
                 """SELECT id, reported_at FROM reports 
                    WHERE company_id = $1 
@@ -872,7 +764,6 @@ class FinancialReports(commands.Cog):
                 await ctx.send(f"ℹ️ **{company_name}** hasn't filed any reports yet!")
                 return
             
-            # Update the timestamp to be old enough to bypass cooldown
             old_timestamp = datetime.now() - timedelta(hours=self.report_cooldown_hours + 1)
             
             await conn.execute(
@@ -888,17 +779,6 @@ class FinancialReports(commands.Cog):
         embed.add_field(name="Previous Report", value=last_report['reported_at'].strftime('%Y-%m-%d %H:%M UTC'), inline=True)
         
         await ctx.send(embed=embed)
-        
-        # Notify the user
-        try:
-            notify_embed = discord.Embed(
-                title="⏰ Report Cooldown Reset",
-                description=f"An administrator has reset the report cooldown for your company **{company_name}** in {ctx.guild.name}. You can file a report now!",
-                color=discord.Color.green()
-            )
-            await user.send(embed=notify_embed)
-        except:
-            pass  # DMs disabled
 
 
 async def setup(bot):
