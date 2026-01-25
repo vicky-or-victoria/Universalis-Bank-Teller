@@ -202,38 +202,40 @@ Remember: You're here to help and chat, not just recite commands! Make banking f
         ]):
             return  # Let FrancescaControl handle it
         
-        # CHECK 2: Don't respond if user has an active report session IN THIS CHANNEL
-        financial_reports_cog = self.bot.get_cog("ReportFiling")
-        if financial_reports_cog and message.author.id in financial_reports_cog.active_sessions:
-            session = financial_reports_cog.active_sessions[message.author.id]
-            if message.channel.id == session.get("channel_id"):
-                return  # Let ReportFiling handle it in this channel
-        
-        # CHECK 2.5: If user just triggered a filing session, respond with the company name prompt
+        # CHECK 2: Check if user wants to file a report (trigger the command)
         file_triggers = [
             "file report", "file a report", "make a report", "create a report",
             "submit report", "submit a report", "i want to file", "id like to file",
             "file my report", "start a report", "new report"
         ]
-        if any(trigger in content_lower for trigger in file_triggers):
-            # Check if session was just created
-            if financial_reports_cog and message.author.id in financial_reports_cog.active_sessions:
-                session = financial_reports_cog.active_sessions[message.author.id]
-                if session["step"] == "company_name" and not session["company_name"]:
-                    # Session just started, provide the prompt
-                    await message.reply(
-                        "*smiles warmly* Of course! I'd be happy to help you file your financial report!\n\n"
-                        "**Please provide your company name:**"
-                    )
-                    return
         
-        # CHECK 3: Don't respond if Francesca is paused in this channel
+        if any(trigger in content_lower for trigger in file_triggers):
+            # Get the ReportFiling cog and trigger the command
+            report_cog = self.bot.get_cog("ReportFiling")
+            if report_cog:
+                # Create a context-like object to invoke the command
+                ctx = await self.bot.get_context(message)
+                await report_cog.file_report(ctx)
+                return  # Don't continue with normal chat response
+        
+        # CHECK 3: Allow chatbot responses even during report filing
+        # The report filing cog will handle its own messages, we just chat normally
+        report_cog = self.bot.get_cog("ReportFiling")
+        if report_cog and message.author.id in report_cog.active_sessions:
+            session = report_cog.active_sessions[message.author.id]
+            # If they're filing a report in THIS channel, let the report cog handle it
+            if message.channel.id == session.get("channel_id"):
+                # Don't respond to messages that look like report data
+                if not message.content.startswith("ub!"):
+                    return  # Let ReportFiling handle it
+        
+        # CHECK 4: Don't respond if Francesca is paused in this channel
         francesca_control_cog = self.bot.get_cog("FrancescaControl")
         if francesca_control_cog and francesca_control_cog.is_channel_paused(message.channel.id):
             return  # Channel has paused responses
         
         # Don't respond to commands
-        if message.content.startswith("ub!"):
+        if message.content.startswith("ub!") or message.content.startswith("/"):
             return
         
         async with message.channel.typing():
