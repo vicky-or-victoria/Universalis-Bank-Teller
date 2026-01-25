@@ -96,6 +96,19 @@ class ReportFiling(commands.Cog):
         if message.content.startswith("ub!") or message.content.startswith("/"):
             return
         
+        # CRITICAL FIX: Ignore trigger phrases that start the filing process
+        content_lower = message.content.strip().lower()
+        file_triggers = [
+            "file report", "file a report", "make a report", "create a report",
+            "submit report", "submit a report", "i want to file", "id like to file",
+            "file my report", "start a report", "new report"
+        ]
+        
+        # If the message contains a trigger phrase, ignore it (it's the trigger, not input)
+        if any(trigger in content_lower for trigger in file_triggers):
+            print(f"[REPORT FILING] Ignoring trigger phrase: {message.content[:50]}")
+            return
+        
         # Add debug logging
         print(f"[REPORT FILING] Processing message from {message.author}: {message.content[:50]}")
         print(f"[REPORT FILING] Current step: {session['step']}")
