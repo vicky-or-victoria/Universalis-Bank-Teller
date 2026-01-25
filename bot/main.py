@@ -48,9 +48,12 @@ class TradingBot(commands.Bot):
         # Load all cogs
         cogs = [
             "cogs.chatgpt_responder",
-            "cogs.financial_reports",
+            "cogs.company_management",
+            "cogs.report_filing",
             "cogs.stock_market",
             "cogs.francesca_control",
+            "cogs.short_selling",
+            "cogs.tax_system",
         ]
 
         for cog in cogs:
@@ -75,6 +78,7 @@ class TradingBot(commands.Bot):
                     owner_id BIGINT NOT NULL,
                     balance DECIMAL(15, 2) DEFAULT 0,
                     is_public BOOLEAN DEFAULT FALSE,
+                    ceo_salary_percent DECIMAL(5, 2) DEFAULT 5.00,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -85,7 +89,13 @@ class TradingBot(commands.Bot):
                     id SERIAL PRIMARY KEY,
                     company_id INTEGER NOT NULL,
                     items_sold TEXT NOT NULL,
+                    gross_revenue DECIMAL(15, 2) NOT NULL,
+                    gross_expenses_percent DECIMAL(5, 2) NOT NULL,
+                    gross_expenses DECIMAL(15, 2) NOT NULL,
                     gross_profit DECIMAL(15, 2) NOT NULL,
+                    corporate_tax DECIMAL(15, 2) NOT NULL,
+                    ceo_salary DECIMAL(15, 2) NOT NULL,
+                    personal_tax DECIMAL(15, 2) NOT NULL,
                     net_profit DECIMAL(15, 2) NOT NULL,
                     reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (company_id) REFERENCES companies(id)
@@ -105,7 +115,7 @@ class TradingBot(commands.Bot):
                 )
             """)
 
-            # Holdings table
+            # Holdings table (for long positions)
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS holdings (
                     id SERIAL PRIMARY KEY,
@@ -117,11 +127,61 @@ class TradingBot(commands.Bot):
                 )
             """)
 
+            # Short positions table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS short_positions (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    stock_id INTEGER NOT NULL,
+                    shares INTEGER NOT NULL,
+                    entry_price DECIMAL(15, 2) NOT NULL,
+                    opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (stock_id) REFERENCES stocks(id),
+                    UNIQUE(user_id, stock_id)
+                )
+            """)
+
             # Users table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
-                    balance DECIMAL(15, 2) DEFAULT 50000
+                    balance DECIMAL(15, 2) DEFAULT 25000
+                )
+            """)
+            
+            # Tax brackets table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS tax_brackets (
+                    id SERIAL PRIMARY KEY,
+                    min_income DECIMAL(15, 2) NOT NULL,
+                    max_income DECIMAL(15, 2),
+                    rate DECIMAL(5, 4) NOT NULL,
+                    bracket_order INTEGER NOT NULL
+                )
+            """)
+            
+            # Initialize default progressive tax brackets if empty
+            bracket_count = await conn.fetchval("SELECT COUNT(*) FROM tax_brackets")
+            if bracket_count == 0:
+                # Default US-style progressive brackets
+                await conn.execute("""
+                    INSERT INTO tax_brackets (min_income, max_income, rate, bracket_order) VALUES
+                    (0, 10000, 0.10, 1),
+                    (10000, 40000, 0.12, 2),
+                    (40000, 85000, 0.22, 3),
+                    (85000, 160000, 0.24, 4),
+                    (160000, 200000, 0.32, 5),
+                    (200000, 500000, 0.35, 6),
+                    (500000, NULL, 0.37, 7)
+                """)
+            
+            # Trade cooldowns table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS trade_cooldowns (
+                    user_id BIGINT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    last_trade TIMESTAMP NOT NULL,
+                    PRIMARY KEY (user_id, ticker)
                 )
             """)
             
