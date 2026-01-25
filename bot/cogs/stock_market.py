@@ -9,6 +9,8 @@ class StockMarket(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.daily_fluctuation.start()
+        # Maximum companies a player can own (configurable)
+        self.max_companies = 3
     
     def cog_unload(self):
         self.daily_fluctuation.cancel()
@@ -36,19 +38,32 @@ class StockMarket(commands.Cog):
             )
     
     @commands.hybrid_command(name="go_public")
-    async def go_public(self, ctx, company_name: str, ticker: str, price: float, shares: int):
+    async def go_public(self, ctx, company_name: str, ticker: str, price: float, total_shares: int, owner_percentage: float):
         """Take your company public on the stock market
         
-        Usage: !go_public "My Company" MYCO 100.00 1000
+        Usage: !go_public "My Company" MYCO 100.00 1000 51.0
+        - owner_percentage: How much of the company you keep (e.g., 51.0 for 51%)
         """
         ticker = ticker.upper()
         
-        if price <= 0 or shares <= 0:
+        if price <= 0 or total_shares <= 0:
             await ctx.send("❌ Price and shares must be positive!")
             return
         
         if len(ticker) > 5:
             await ctx.send("❌ Ticker symbol must be 5 characters or less!")
+            return
+        
+        if owner_percentage < 0 or owner_percentage > 100:
+            await ctx.send("❌ Owner percentage must be between 0 and 100!")
+            return
+        
+        # Calculate shares
+        owner_shares = int(total_shares * (owner_percentage / 100))
+        public_shares = total_shares - owner_shares
+        
+        if public_shares <= 0:
+            await ctx.send("❌ You must offer at least some shares to the public!")
             return
         
         async with self.bot.db.acquire() as conn:
@@ -76,15 +91,22 @@ class StockMarket(commands.Cog):
                 return
             
             # Create stock and mark company as public
-            await conn.execute(
-                "INSERT INTO stocks (company_id, ticker, price, available_shares, total_shares) VALUES ($1, $2, $3, $4, $5)",
-                company_id, ticker, price, shares, shares
+            stock_id = await conn.fetchval(
+                "INSERT INTO stocks (company_id, ticker, price, available_shares, total_shares) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                company_id, ticker, price, public_shares, total_shares
             )
             
             await conn.execute(
                 "UPDATE companies SET is_public = $1 WHERE id = $2",
                 True, company_id
             )
+            
+            # Give owner their shares
+            if owner_shares > 0:
+                await conn.execute(
+                    "INSERT INTO holdings (user_id, stock_id, shares) VALUES ($1, $2, $3)",
+                    ctx.author.id, stock_id, owner_shares
+                )
         
         embed = discord.Embed(
             title="🎉 IPO Launch!",
@@ -93,8 +115,10 @@ class StockMarket(commands.Cog):
         )
         embed.add_field(name="Ticker", value=ticker, inline=True)
         embed.add_field(name="Initial Price", value=f"${price:,.2f}", inline=True)
-        embed.add_field(name="Shares Available", value=f"{shares:,}", inline=True)
-        embed.add_field(name="Market Cap", value=f"${price * shares:,.2f}", inline=False)
+        embed.add_field(name="Total Shares", value=f"{total_shares:,}", inline=True)
+        embed.add_field(name="Your Ownership", value=f"{owner_shares:,} shares ({owner_percentage:.1f}%)", inline=True)
+        embed.add_field(name="Public Shares", value=f"{public_shares:,} shares ({100-owner_percentage:.1f}%)", inline=True)
+        embed.add_field(name="Market Cap", value=f"${price * total_shares:,.2f}", inline=False)
         
         await ctx.send(embed=embed)
     
@@ -406,12 +430,21 @@ class StockMarket(commands.Cog):
         await ctx.send(embed=embed)
     
     @commands.hybrid_command(name="balance")
-    async def balance(self, ctx):
-        """Check your cash balance"""
-        balance = await self.get_user_balance(ctx.author.id)
+    async def balance(self, ctx, user: discord.User = None):
+        """Check cash balance
+        
+        Usage: !balance [@user]
+        """
+        target_user = user or ctx.author
+        balance = await self.get_user_balance(target_user.id)
+        
+        if target_user == ctx.author:
+            title = "💰 Your Balance"
+        else:
+            title = f"💰 {target_user.display_name}'s Balance"
         
         embed = discord.Embed(
-            title="💰 Your Balance",
+            title=title,
             description=f"**${balance:,.2f}**",
             color=discord.Color.gold()
         )
@@ -699,6 +732,30 @@ class StockMarket(commands.Cog):
         )
         embed.add_field(name="Shares", value=f"{available:,}/{total:,} available", inline=True)
         embed.add_field(name="Holdings Cleared", value=str(holdings_count), inline=True)
+        
+        await ctx.send(embed=embed)
+    
+    @commands.hybrid_command(name="set_max_companies")
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
+    async def set_max_companies(self, ctx, max_amount: int):
+        """Set the maximum number of companies a player can own (Admin/Owner only)
+        
+        Usage: !set_max_companies 5
+        """
+        if max_amount < 1:
+            await ctx.send("❌ Maximum must be at least 1!")
+            return
+        
+        old_max = self.max_companies
+        self.max_companies = max_amount
+        
+        embed = discord.Embed(
+            title="🏢 Max Companies Updated",
+            description=f"Players can now own up to **{max_amount}** companies",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Previous Limit", value=str(old_max), inline=True)
+        embed.add_field(name="New Limit", value=str(max_amount), inline=True)
         
         await ctx.send(embed=embed)
 
