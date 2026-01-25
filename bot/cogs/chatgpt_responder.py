@@ -61,7 +61,7 @@ Players can ask naturally OR use commands:
 - `ub!balance [@user]` or `/balance [@user]` - Check cash balance
 - `ub!transfer_money @user amount` - Transfer money
 
-**🏛️ Tax Information:**
+**�️ Tax Information:**
 - `ub!view_tax_brackets` or `/view-tax-brackets` - View tax brackets
 - `ub!calculate_tax_example <income>` - Calculate tax on income
 
@@ -189,8 +189,20 @@ Remember: You're here to help and chat, not just recite commands! Make banking f
         if any(trigger in content_lower for trigger in file_triggers):
             report_cog = self.bot.get_cog("ReportFiling")
             if report_cog:
-                ctx = await self.bot.get_context(message)
-                await report_cog.file_report(ctx)
+                # Create the session directly (don't call file_report command)
+                report_cog.active_sessions[message.author.id] = {
+                    "step": "company_name",
+                    "company_name": None,
+                    "gross_expenses_percent": None,
+                    "items": [],
+                    "channel_id": message.channel.id
+                }
+                
+                # Send the initial prompt
+                await message.reply(
+                    "*smiles warmly* Of course! I'd be happy to help you file your financial report!\n\n"
+                    "**Please provide your company name:**"
+                )
                 return
         
         # CHECK 3: DON'T block Francesca if user is filing a report
