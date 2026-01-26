@@ -61,7 +61,7 @@ Players can ask naturally OR use commands:
 - `ub!balance [@user]` or `/balance [@user]` - Check cash balance
 - `ub!transfer_money @user amount` - Transfer money
 
-**�️ Tax Information:**
+**🏛️ Tax Information:**
 - `ub!view_tax_brackets` or `/view-tax-brackets` - View tax brackets
 - `ub!calculate_tax_example <income>` - Calculate tax on income
 
@@ -180,16 +180,32 @@ Remember: You're here to help and chat, not just recite commands! Make banking f
             return
         
         # CHECK 2: Check if user wants to file a report
+        # IMPORTANT: We need to handle this BEFORE the session processes the message
         file_triggers = [
             "file report", "file a report", "make a report", "create a report",
             "submit report", "submit a report", "i want to file", "id like to file",
-            "file my report", "start a report", "new report"
+            "i'd like to file", "file my report", "start a report", "new report",
+            "i wanna file", "want to file a report"
         ]
         
-        if any(trigger in content_lower for trigger in file_triggers):
+        # Check if this message is a filing trigger
+        is_filing_trigger = any(trigger in content_lower for trigger in file_triggers)
+        
+        if is_filing_trigger:
             report_cog = self.bot.get_cog("ReportFiling")
             if report_cog:
-                # Create the session directly (don't call file_report command)
+                # Check if user already has an active session
+                if message.author.id in report_cog.active_sessions:
+                    session = report_cog.active_sessions[message.author.id]
+                    channel = self.bot.get_channel(session["channel_id"])
+                    channel_mention = channel.mention if channel else "another channel"
+                    await message.reply(
+                        f"⚠️ You already have an active report session in {channel_mention}! "
+                        f"Use `/cancel-report` to cancel it first."
+                    )
+                    return
+                
+                # Create the session
                 report_cog.active_sessions[message.author.id] = {
                     "step": "company_name",
                     "company_name": None,
@@ -198,21 +214,27 @@ Remember: You're here to help and chat, not just recite commands! Make banking f
                     "channel_id": message.channel.id
                 }
                 
+                print(f"[CHATGPT RESPONDER] Started report session for {message.author}")
+                
                 # Send the initial prompt
                 await message.reply(
                     "*smiles warmly* Of course! I'd be happy to help you file your financial report!\n\n"
                     "**Please provide your company name:**"
                 )
+                
+                # CRITICAL: Return immediately so this trigger message is NOT processed further
+                # This prevents "i want to file a report" from being treated as the company name
                 return
         
-        # CHECK 3: DON'T block Francesca if user is filing a report
+        # CHECK 3: DON'T respond if user is filing a report
         # The report filing system handles its own input - Francesca should stay silent
         report_cog = self.bot.get_cog("ReportFiling")
         if report_cog and message.author.id in report_cog.active_sessions:
             session = report_cog.active_sessions[message.author.id]
             if message.channel.id == session.get("channel_id"):
-                # User is actively filing - let the system handle it
+                # User is actively filing - let the report system handle it
                 # Francesca should NOT respond during the filing process
+                print(f"[CHATGPT RESPONDER] User {message.author} is filing, staying silent")
                 return
         
         # CHECK 4: Don't respond if paused in this channel
