@@ -51,53 +51,117 @@ class ReportFiling(commands.Cog):
                         return data["choices"][0]["message"]["content"]
         except Exception as e:
             print(f"ChatGPT API error: {e}")
-        
-        return None
-    
-    @commands.hybrid_command(name="file_report")
-    async def file_report(self, ctx):
-        """Start filing a financial report"""
-        if ctx.author.id in self.active_sessions:
-            session = self.active_sessions[ctx.author.id]
-            channel = self.bot.get_channel(session["channel_id"])
-            channel_mention = channel.mention if channel else "another channel"
-            await ctx.send(f"⚠️ You already have an active report session in {channel_mention}! Use `/cancel-report` to cancel it first.")
-            return
-        
-        self.active_sessions[ctx.author.id] = {
-            "step": "company_name",
-            "company_name": None,
-            "gross_expenses_percent": None,
-            "items": [],
-            "channel_id": ctx.channel.id
-        }
-        
-        await ctx.send(
-            "*smiles warmly* Of course! I'd be happy to help you file your financial report!\n\n"
-            "**Please provide your company name:**"
-        )
-    
+            
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Handle report filing conversation"""
+        """Auto-respond to all messages in the responder channel or forum threads"""
         if message.author.bot:
             return
         
-        user_id = message.author.id
+        # Check if in responder channel or forum thread
+        in_responder_channel = message.channel.id == self.responder_channel_id
+        in_forum_thread = False
+        if isinstance(message.channel, discord.Thread):
+            if message.channel.parent_id == self.forum_channel_id:
+                in_forum_thread = True
         
-        if user_id not in self.active_sessions:
+        if not (in_responder_channel or in_forum_thread):
             return
         
-        session = self.active_sessions[user_id]
-        
-        # Check if message is in the correct channel
-        if message.channel.id != session["channel_id"]:
+        # CHECK 1: Don't respond to control phrases
+        content_lower = message.content.strip().lower()
+        if any(phrase in content_lower for phrase in [
+            "thanks francesca", "thank you francesca",
+            "hey francesca", "hi francesca", "hello francesca",
+            "close francesca"
+        ]):
             return
         
-        # Don't process commands
+        # CHECK 2: Check if user wants to file a report
+        # IMPORTANT: We need to check this BEFORE creating the session
+        # to avoid the trigger message being processed as input
+        file_triggers = [
+            "file report", "file a report", "make a report", "create a report",
+            "submit report", "submit a report", "i want to file", "id like to file",
+            "i'd like to file", "file my report", "start a report", "new report",
+            "i wanna file", "want to file a report"
+        ]
+        
+        # Check if this message is a filing trigger
+        is_filing_trigger = any(trigger in content_lower for trigger in file_triggers)
+        
+        if is_filing_trigger:
+            report_cog = self.bot.get_cog("ReportFiling")
+            if report_cog:
+                # Check if user already has an active session
+                if message.author.id in report_cog.active_sessions:
+                    session = report_cog.active_sessions[message.author.id]
+                    channel = self.bot.get_channel(session["channel_id"])
+                    channel_mention = channel.mention if channel else "another channel"
+                    await message.reply(
+                        f"⚠️ You already have an active report session in {channel_mention}! "
+                        f"Use `/cancel-report` to cancel it first."
+                    )
+                    return
+                
+                # Create the session
+                report_cog.active_sessions[message.author.id] = {
+                    "step": "company_name",
+                    "company_name": None,
+                    "gross_expenses_percent": None,
+                    "items": [],
+                    "channel_id": message.channel.id
+                }
+                
+                print(f"[CHATGPT RESPONDER] Started report session for {message.author}")
+                
+                # Send the initial prompt
+                await message.reply(
+                    "*smiles warmly* Of course! I'd be happy to help you file your financial report!\n\n"
+                    "**Please provide your company name:**"
+                )
+                
+                # CRITICAL: Return immediately so this trigger message is NOT processed further
+                # This prevents "i want to file a report" from being treated as the company name
+                return
+        
+        # CHECK 3: DON'T respond if user is filing a report
+        # The report filing system handles its own input - Francesca should stay silent
+        report_cog = self.bot.get_cog("ReportFiling")
+        if report_cog and message.author.id in report_cog.active_sessions:
+            session = report_cog.active_sessions[message.author.id]
+            if message.channel.id == session.get("channel_id"):
+                # User is actively filing - let the report system handle it
+                # Francesca should NOT respond during the filing process
+                print(f"[CHATGPT RESPONDER] User {message.author} is filing, staying silent")
+                return
+        
+        # CHECK 4: Don't respond if paused in this channel
+        francesca_control_cog = self.bot.get_cog("FrancescaControl")
+        if francesca_control_cog and francesca_control_cog.is_channel_paused(message.channel.id):
+            return
+        
+        # Don't respond to commands
         if message.content.startswith("ub!") or message.content.startswith("/"):
             return
         
+        async with message.channel.typing():
+            messages = self.get_conversation_history(message.author.id)
+            self.add_to_conversation(message.author.id, "user", message.content)
+            messages = self.get_conversation_history(message.author.id)
+            
+            response = await self.call_chatgpt(messages)
+            
+            if response:
+                self.add_to_conversation(message.author.id, "assistant", response)
+                
+                if len(response) > 2000:
+                    chunks = [response[i:i+2000] for i in range(0, len(response), 2000)]
+                    for chunk in chunks:
+                        await message.reply(chunk)
+                else:
+                    await message.reply(response)
+                    
         # Step 1: Get company name
         if session["step"] == "company_name":
             company_name = message.content.strip()
