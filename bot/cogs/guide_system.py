@@ -52,9 +52,9 @@ class HelpGuideView(View):
     def get_main_embed():
         """Main help guide embed"""
         embed = discord.Embed(
-            title="� Welcome to Francesca's Banking System!",
+            title="🏛️ Welcome to Francesca's Banking System!",
             description=(
-                "**Your friendly Discord economy bot for managing companies, trading stocks, and building wealth!**\n\n"
+                "**I'm here to help you with your managing of companies, trading stocks, and building wealth!**\n\n"
                 "Hi there! I'm Francesca (Franky for short), your personal bank teller. "
                 "I'm here to help you succeed in this financial adventure! 💼✨"
             ),
