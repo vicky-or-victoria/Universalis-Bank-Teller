@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -14,6 +14,11 @@ class LoanSystem(commands.Cog):
         self.max_personal_loan = 100000     # Max $100k personal loan
         self.max_company_loan = 500000      # Max $500k company loan
         self.loan_duration_days = 30        # 30 days to repay
+        self.late_fee_rate = 0.05           # 5% late fee per day overdue
+        self.max_late_fee_multiplier = 2.0  # Late fees can't exceed 200% of original loan
+        
+        # Start background task to check for overdue loans
+        self.check_overdue_loans.start()
     
     async def get_user_balance(self, user_id: int) -> float:
         """Get user balance"""
@@ -32,6 +37,108 @@ class LoanSystem(commands.Cog):
                 amount, user_id
             )
     
+    def cog_unload(self):
+        """Cleanup when cog is unloaded"""
+        self.check_overdue_loans.cancel()
+    
+    @tasks.loop(hours=6)
+    async def check_overdue_loans(self):
+        """Check for overdue loans every 6 hours and apply penalties"""
+        try:
+            current_time = datetime.now()
+            
+            async with self.bot.db.acquire() as conn:
+                # Check overdue personal loans
+                overdue_personal = await conn.fetch(
+                    """SELECT id, user_id, principal, interest_amount, total_amount, due_date, late_fees
+                       FROM personal_loans 
+                       WHERE repaid = FALSE AND due_date < $1""",
+                    current_time
+                )
+                
+                for loan in overdue_personal:
+                    loan_id = loan['id']
+                    user_id = loan['user_id']
+                    principal = float(loan['principal'])
+                    current_total = float(loan['total_amount'])
+                    due_date = loan['due_date']
+                    existing_late_fees = float(loan['late_fees']) if loan['late_fees'] else 0
+                    
+                    # Calculate days overdue
+                    days_overdue = (current_time - due_date).days
+                    
+                    if days_overdue > 0:
+                        # Calculate daily late fee
+                        daily_late_fee = principal * self.late_fee_rate
+                        new_late_fees = daily_late_fee * days_overdue
+                        
+                        # Cap late fees at max multiplier
+                        max_late_fees = principal * self.max_late_fee_multiplier
+                        new_late_fees = min(new_late_fees, max_late_fees)
+                        
+                        # Only update if late fees have increased
+                        if new_late_fees > existing_late_fees:
+                            new_total = principal + float(loan['interest_amount']) + new_late_fees
+                            
+                            await conn.execute(
+                                "UPDATE personal_loans SET late_fees = $1, total_amount = $2 WHERE id = $3",
+                                new_late_fees, new_total, loan_id
+                            )
+                            
+                            print(f"[LOANS] Applied ${new_late_fees - existing_late_fees:.2f} late fees to user {user_id} (Personal Loan #{loan_id})")
+                
+                # Check overdue company loans
+                overdue_company = await conn.fetch(
+                    """SELECT cl.id, cl.company_id, c.owner_id, c.name, cl.principal, cl.interest_amount, 
+                              cl.total_amount, cl.due_date, cl.late_fees
+                       FROM company_loans cl
+                       JOIN companies c ON cl.company_id = c.id
+                       WHERE cl.repaid = FALSE AND cl.due_date < $1""",
+                    current_time
+                )
+                
+                for loan in overdue_company:
+                    loan_id = loan['id']
+                    company_id = loan['company_id']
+                    company_name = loan['name']
+                    principal = float(loan['principal'])
+                    current_total = float(loan['total_amount'])
+                    due_date = loan['due_date']
+                    existing_late_fees = float(loan['late_fees']) if loan['late_fees'] else 0
+                    
+                    # Calculate days overdue
+                    days_overdue = (current_time - due_date).days
+                    
+                    if days_overdue > 0:
+                        # Calculate daily late fee
+                        daily_late_fee = principal * self.late_fee_rate
+                        new_late_fees = daily_late_fee * days_overdue
+                        
+                        # Cap late fees
+                        max_late_fees = principal * self.max_late_fee_multiplier
+                        new_late_fees = min(new_late_fees, max_late_fees)
+                        
+                        # Only update if late fees have increased
+                        if new_late_fees > existing_late_fees:
+                            new_total = principal + float(loan['interest_amount']) + new_late_fees
+                            
+                            await conn.execute(
+                                "UPDATE company_loans SET late_fees = $1, total_amount = $2 WHERE id = $3",
+                                new_late_fees, new_total, loan_id
+                            )
+                            
+                            print(f"[LOANS] Applied ${new_late_fees - existing_late_fees:.2f} late fees to {company_name} (Company Loan #{loan_id})")
+            
+            print(f"[LOANS] Checked overdue loans: {len(overdue_personal)} personal, {len(overdue_company)} company")
+        
+        except Exception as e:
+            print(f"[LOANS ERROR] Failed to check overdue loans: {e}")
+    
+    @check_overdue_loans.before_loop
+    async def before_check_overdue_loans(self):
+        """Wait until bot is ready before starting the loop"""
+        await self.bot.wait_until_ready()
+    
     @commands.hybrid_command(name="request_loan")
     async def request_personal_loan(self, ctx, amount: float):
         """Request a personal loan
@@ -49,19 +156,29 @@ class LoanSystem(commands.Cog):
         async with self.bot.db.acquire() as conn:
             # Check for existing personal loan
             existing_loan = await conn.fetchrow(
-                "SELECT id, principal, interest_amount, due_date FROM personal_loans WHERE user_id = $1 AND repaid = FALSE",
+                "SELECT id, principal, interest_amount, total_amount, due_date, late_fees FROM personal_loans WHERE user_id = $1 AND repaid = FALSE",
                 ctx.author.id
             )
             
             if existing_loan:
                 principal = float(existing_loan['principal'])
                 interest = float(existing_loan['interest_amount'])
-                total_owed = principal + interest
+                late_fees = float(existing_loan['late_fees']) if existing_loan['late_fees'] else 0
+                total_owed = float(existing_loan['total_amount'])
                 due_date = existing_loan['due_date']
                 
+                # Check if overdue
+                is_overdue = datetime.now() > due_date
+                days_overdue = (datetime.now() - due_date).days if is_overdue else 0
+                
+                overdue_msg = f"\n⚠️ **OVERDUE by {days_overdue} days!**" if is_overdue else ""
+                late_fee_msg = f"\n**Late Fees:** ${late_fees:,.2f}" if late_fees > 0 else ""
+                
                 await ctx.send(
-                    f"❌ You already have an outstanding loan!\n"
-                    f"**Amount Owed:** ${total_owed:,.2f} (${principal:,.2f} + ${interest:,.2f} interest)\n"
+                    f"❌ You already have an outstanding loan!{overdue_msg}\n"
+                    f"**Principal:** ${principal:,.2f}\n"
+                    f"**Interest:** ${interest:,.2f}{late_fee_msg}\n"
+                    f"**Total Owed:** ${total_owed:,.2f}\n"
                     f"**Due Date:** {due_date.strftime('%Y-%m-%d')}\n"
                     f"Use `/repay-loan {total_owed:.2f}` to repay it."
                 )
@@ -74,9 +191,9 @@ class LoanSystem(commands.Cog):
             
             # Create loan record
             await conn.execute(
-                """INSERT INTO personal_loans (user_id, principal, interest_amount, total_amount, due_date, taken_at)
-                   VALUES ($1, $2, $3, $4, $5, $6)""",
-                ctx.author.id, amount, interest_amount, total_repayment, due_date, datetime.now()
+                """INSERT INTO personal_loans (user_id, principal, interest_amount, total_amount, due_date, taken_at, late_fees)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                ctx.author.id, amount, interest_amount, total_repayment, due_date, datetime.now(), 0
             )
             
             # Give money to user
@@ -129,19 +246,29 @@ class LoanSystem(commands.Cog):
             
             # Check for existing company loan
             existing_loan = await conn.fetchrow(
-                "SELECT id, principal, interest_amount, due_date FROM company_loans WHERE company_id = $1 AND repaid = FALSE",
+                "SELECT id, principal, interest_amount, total_amount, due_date, late_fees FROM company_loans WHERE company_id = $1 AND repaid = FALSE",
                 company_id
             )
             
             if existing_loan:
                 principal = float(existing_loan['principal'])
                 interest = float(existing_loan['interest_amount'])
-                total_owed = principal + interest
+                late_fees = float(existing_loan['late_fees']) if existing_loan['late_fees'] else 0
+                total_owed = float(existing_loan['total_amount'])
                 due_date = existing_loan['due_date']
                 
+                # Check if overdue
+                is_overdue = datetime.now() > due_date
+                days_overdue = (datetime.now() - due_date).days if is_overdue else 0
+                
+                overdue_msg = f"\n⚠️ **OVERDUE by {days_overdue} days!**" if is_overdue else ""
+                late_fee_msg = f"\n**Late Fees:** ${late_fees:,.2f}" if late_fees > 0 else ""
+                
                 await ctx.send(
-                    f"❌ **{company_name}** already has an outstanding loan!\n"
-                    f"**Amount Owed:** ${total_owed:,.2f} (${principal:,.2f} + ${interest:,.2f} interest)\n"
+                    f"❌ **{company_name}** already has an outstanding loan!{overdue_msg}\n"
+                    f"**Principal:** ${principal:,.2f}\n"
+                    f"**Interest:** ${interest:,.2f}{late_fee_msg}\n"
+                    f"**Total Owed:** ${total_owed:,.2f}\n"
                     f"**Due Date:** {due_date.strftime('%Y-%m-%d')}\n"
                     f"Use `/repay-company-loan \"{company_name}\" {total_owed:.2f}` to repay it."
                 )
@@ -154,9 +281,9 @@ class LoanSystem(commands.Cog):
             
             # Create loan record
             await conn.execute(
-                """INSERT INTO company_loans (company_id, principal, interest_amount, total_amount, due_date, taken_at)
-                   VALUES ($1, $2, $3, $4, $5, $6)""",
-                company_id, amount, interest_amount, total_repayment, due_date, datetime.now()
+                """INSERT INTO company_loans (company_id, principal, interest_amount, total_amount, due_date, taken_at, late_fees)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                company_id, amount, interest_amount, total_repayment, due_date, datetime.now(), 0
             )
             
             # Add money to company
@@ -191,7 +318,7 @@ class LoanSystem(commands.Cog):
         """
         async with self.bot.db.acquire() as conn:
             loan = await conn.fetchrow(
-                "SELECT id, principal, interest_amount, total_amount, due_date FROM personal_loans WHERE user_id = $1 AND repaid = FALSE",
+                "SELECT id, principal, interest_amount, total_amount, due_date, late_fees FROM personal_loans WHERE user_id = $1 AND repaid = FALSE",
                 ctx.author.id
             )
             
@@ -203,6 +330,7 @@ class LoanSystem(commands.Cog):
             total_owed = float(loan['total_amount'])
             principal = float(loan['principal'])
             interest = float(loan['interest_amount'])
+            late_fees = float(loan['late_fees']) if loan['late_fees'] else 0
             due_date = loan['due_date']
             
             # If no amount specified, repay full amount
@@ -243,6 +371,10 @@ class LoanSystem(commands.Cog):
                 embed.add_field(name="Amount Paid", value=f"${amount:,.2f}", inline=True)
                 embed.add_field(name="Principal", value=f"${principal:,.2f}", inline=True)
                 embed.add_field(name="Interest", value=f"${interest:,.2f}", inline=True)
+                if late_fees > 0:
+                    embed.add_field(name="Late Fees Paid", value=f"${late_fees:,.2f}", inline=True)
+                if late_fees > 0:
+                    embed.add_field(name="Late Fees Paid", value=f"${late_fees:,.2f}", inline=True)
             else:
                 # Partial repayment
                 await conn.execute(
@@ -286,7 +418,7 @@ class LoanSystem(commands.Cog):
             company_balance = float(company['balance'])
             
             loan = await conn.fetchrow(
-                "SELECT id, principal, interest_amount, total_amount, due_date FROM company_loans WHERE company_id = $1 AND repaid = FALSE",
+                "SELECT id, principal, interest_amount, total_amount, due_date, late_fees FROM company_loans WHERE company_id = $1 AND repaid = FALSE",
                 company_id
             )
             
@@ -298,6 +430,7 @@ class LoanSystem(commands.Cog):
             total_owed = float(loan['total_amount'])
             principal = float(loan['principal'])
             interest = float(loan['interest_amount'])
+            late_fees = float(loan['late_fees']) if loan['late_fees'] else 0
             due_date = loan['due_date']
             
             # If no amount specified, repay full amount
@@ -366,14 +499,14 @@ class LoanSystem(commands.Cog):
         async with self.bot.db.acquire() as conn:
             # Get personal loans
             personal_loans = await conn.fetch(
-                """SELECT principal, interest_amount, total_amount, due_date, taken_at, repaid, repaid_at
+                """SELECT principal, interest_amount, total_amount, due_date, taken_at, repaid, repaid_at, late_fees
                    FROM personal_loans WHERE user_id = $1 ORDER BY taken_at DESC LIMIT 5""",
                 ctx.author.id
             )
             
             # Get company loans
             company_loans = await conn.fetch(
-                """SELECT c.name, cl.principal, cl.interest_amount, cl.total_amount, cl.due_date, cl.taken_at, cl.repaid, cl.repaid_at
+                """SELECT c.name, cl.principal, cl.interest_amount, cl.total_amount, cl.due_date, cl.taken_at, cl.repaid, cl.repaid_at, cl.late_fees
                    FROM company_loans cl
                    JOIN companies c ON cl.company_id = c.id
                    WHERE c.owner_id = $1 ORDER BY cl.taken_at DESC LIMIT 5""",
@@ -391,14 +524,22 @@ class LoanSystem(commands.Cog):
             for loan in personal_loans:
                 status = "✅ Repaid" if loan['repaid'] else "⏳ Outstanding"
                 amount = float(loan['total_amount'])
+                late_fees = float(loan['late_fees']) if loan['late_fees'] else 0
                 due = loan['due_date'].strftime("%Y-%m-%d")
                 
                 if loan['repaid']:
                     repaid_date = loan['repaid_at'].strftime("%Y-%m-%d")
-                    personal_text += f"{status} - ${amount:,.2f} (Repaid: {repaid_date})\n"
+                    late_fee_text = f" (incl. ${late_fees:,.2f} late fees)" if late_fees > 0 else ""
+                    personal_text += f"{status} - ${amount:,.2f}{late_fee_text} (Repaid: {repaid_date})\n"
                 else:
                     days_left = (loan['due_date'] - datetime.now()).days
-                    personal_text += f"{status} - **${amount:,.2f}** (Due: {due}, {days_left} days left)\n"
+                    if days_left < 0:
+                        status = "🚨 OVERDUE"
+                        days_text = f"{abs(days_left)} days overdue"
+                    else:
+                        days_text = f"{days_left} days left"
+                    late_fee_text = f" + ${late_fees:,.2f} late fees" if late_fees > 0 else ""
+                    personal_text += f"{status} - **${amount:,.2f}**{late_fee_text} (Due: {due}, {days_text})\n"
             
             embed.add_field(name="💰 Personal Loans", value=personal_text, inline=False)
         else:
@@ -411,14 +552,22 @@ class LoanSystem(commands.Cog):
                 company_name = loan['name']
                 status = "✅ Repaid" if loan['repaid'] else "⏳ Outstanding"
                 amount = float(loan['total_amount'])
+                late_fees = float(loan['late_fees']) if loan['late_fees'] else 0
                 due = loan['due_date'].strftime("%Y-%m-%d")
                 
                 if loan['repaid']:
                     repaid_date = loan['repaid_at'].strftime("%Y-%m-%d")
-                    company_text += f"**{company_name}** - {status} (${amount:,.2f}, Repaid: {repaid_date})\n"
+                    late_fee_text = f" (incl. ${late_fees:,.2f} late fees)" if late_fees > 0 else ""
+                    company_text += f"**{company_name}** - {status} (${amount:,.2f}{late_fee_text}, Repaid: {repaid_date})\n"
                 else:
                     days_left = (loan['due_date'] - datetime.now()).days
-                    company_text += f"**{company_name}** - {status} (**${amount:,.2f}**, Due: {due}, {days_left} days left)\n"
+                    if days_left < 0:
+                        status = "🚨 OVERDUE"
+                        days_text = f"{abs(days_left)} days overdue"
+                    else:
+                        days_text = f"{days_left} days left"
+                    late_fee_text = f" + ${late_fees:,.2f} late fees" if late_fees > 0 else ""
+                    company_text += f"**{company_name}** - {status} (**${amount:,.2f}**{late_fee_text}, Due: {due}, {days_text})\n"
             
             embed.add_field(name="🏢 Company Loans", value=company_text, inline=False)
         else:
@@ -442,6 +591,8 @@ class LoanSystem(commands.Cog):
         embed.add_field(name="Loan Duration", value=f"{self.loan_duration_days} days", inline=True)
         embed.add_field(name="Max Personal Loan", value=f"${self.max_personal_loan:,.2f}", inline=True)
         embed.add_field(name="Max Company Loan", value=f"${self.max_company_loan:,.2f}", inline=True)
+        embed.add_field(name="Late Fee Rate", value=f"{self.late_fee_rate * 100:.1f}% per day", inline=True)
+        embed.add_field(name="Max Late Fees", value=f"{self.max_late_fee_multiplier * 100:.0f}% of principal", inline=True)
         
         await ctx.send(embed=embed)
     
