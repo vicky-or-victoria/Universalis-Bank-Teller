@@ -1,6 +1,8 @@
 import random
+from discord.ext import commands
 
-class CompanyEvents:
+
+class CompanyEvents(commands.Cog):
     """Random events that can affect companies and stock prices"""
     
     # Negative events (reduce stock price)
@@ -119,6 +121,9 @@ class CompanyEvents:
         }
     ]
     
+    def __init__(self, bot):
+        self.bot = bot
+    
     @staticmethod
     def calculate_event_chance(net_profit: float) -> float:
         """Calculate chance of event occurring based on net profit
@@ -142,39 +147,37 @@ class CompanyEvents:
             # Unprofitable - higher chance of negative events
             return base_chance * 1.3
     
-    @staticmethod
-    def should_event_occur(net_profit: float) -> bool:
+    def should_event_occur(self, net_profit: float) -> bool:
         """Determine if an event should occur"""
-        chance = CompanyEvents.calculate_event_chance(net_profit)
+        chance = self.calculate_event_chance(net_profit)
         return random.random() < chance
     
-    @staticmethod
-    def get_random_event(net_profit: float):
+    def get_random_event(self, net_profit: float):
         """Get a random event based on company performance
         
         Returns: dict with event details or None
         """
-        if not CompanyEvents.should_event_occur(net_profit):
+        if not self.should_event_occur(net_profit):
             return None
         
         # Determine if positive or negative
         if net_profit > 5000:
             # Profitable companies more likely to have positive events
             event_pool = (
-                CompanyEvents.POSITIVE_EVENTS * 6 + 
-                CompanyEvents.NEGATIVE_EVENTS * 4
+                self.POSITIVE_EVENTS * 6 + 
+                self.NEGATIVE_EVENTS * 4
             )
         elif net_profit > 0:
             # Barely profitable - equal chance
             event_pool = (
-                CompanyEvents.POSITIVE_EVENTS * 5 + 
-                CompanyEvents.NEGATIVE_EVENTS * 5
+                self.POSITIVE_EVENTS * 5 + 
+                self.NEGATIVE_EVENTS * 5
             )
         else:
             # Unprofitable - more likely negative
             event_pool = (
-                CompanyEvents.POSITIVE_EVENTS * 3 + 
-                CompanyEvents.NEGATIVE_EVENTS * 7
+                self.POSITIVE_EVENTS * 3 + 
+                self.NEGATIVE_EVENTS * 7
             )
         
         # Weighted random selection
@@ -194,3 +197,7 @@ class CompanyEvents:
             'impact': actual_impact,
             'is_positive': actual_impact > 0
         }
+
+
+async def setup(bot):
+    await bot.add_cog(CompanyEvents(bot))
