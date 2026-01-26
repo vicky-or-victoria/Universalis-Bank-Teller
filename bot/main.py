@@ -60,6 +60,8 @@ class TradingBot(commands.Bot):
             "cogs.tax_system",
             "cogs.admin_company_tools",
             "cogs.leaderboard",
+            "cogs.guide_system",
+            "cogs.company_events",
         ]
 
         for cog in cogs:
