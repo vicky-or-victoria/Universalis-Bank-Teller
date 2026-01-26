@@ -52,7 +52,7 @@ class HelpGuideView(View):
     def get_main_embed():
         """Main help guide embed"""
         embed = discord.Embed(
-            title="🏦 Welcome to Francesca's Banking System!",
+            title="� Welcome to Francesca's Banking System!",
             description=(
                 "**Your friendly Discord economy bot for managing companies, trading stocks, and building wealth!**\n\n"
                 "Hi there! I'm Francesca (Franky for short), your personal bank teller. "
@@ -95,7 +95,6 @@ class HelpGuideView(View):
         )
         
         embed.set_footer(text="💡 Tip: Most commands work with natural language - just ask me!")
-        embed.set_thumbnail(url="https://cdn.discordapp.com/emojis/1234567890.png")  # Optional: Add bot avatar
         
         return embed
     
@@ -620,8 +619,8 @@ class HelpGuideView(View):
         return embed
 
 
-class HelpGuidePost(commands.Cog):
-    """Post the interactive help guide"""
+class GuideSystem(commands.Cog):
+    """Interactive help guide system"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -641,4 +640,4 @@ class HelpGuidePost(commands.Cog):
 
 
 async def setup(bot):
-    await bot.add_cog(HelpGuidePost(bot))
+    await bot.add_cog(GuideSystem(bot))
