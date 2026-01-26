@@ -43,35 +43,35 @@ class TradingBot(commands.Bot):
             print(f"❌ Failed to connect to database: {e}")
             return
         
-    await self.init_database()
+        await self.init_database()
 
-    # Load all cogs 
-    cogs = [
-        "cogs.help_system",
-        "cogs.chatgpt_responder",
-        "cogs.company_management",
-        "cogs.report_filing",
-        "cogs.stock_trading",
-        "cogs.company_public",
-        "cogs.admin_finance",
-        "cogs.loan_system",
-        "cogs.francesca_control",
-        "cogs.short_selling",
-        "cogs.tax_system",
-        "cogs.admin_company_tools",
-        "cogs.leaderboard",
-    ]
+        # Load all cogs 
+        cogs = [
+            "cogs.help_system",
+            "cogs.chatgpt_responder",
+            "cogs.company_management",
+            "cogs.report_filing",
+            "cogs.stock_trading",
+            "cogs.company_public",
+            "cogs.admin_finance",
+            "cogs.loan_system",
+            "cogs.francesca_control",
+            "cogs.short_selling",
+            "cogs.tax_system",
+            "cogs.admin_company_tools",
+            "cogs.leaderboard",
+        ]
 
-    for cog in cogs:
-        try:
-            await self.load_extension(cog)
-            print(f"✅ Loaded {cog}")
-        except Exception as e:
-            print(f"❌ Failed to load {cog}: {e}")
+        for cog in cogs:
+            try:
+                await self.load_extension(cog)
+                print(f"✅ Loaded {cog}")
+            except Exception as e:
+                print(f"❌ Failed to load {cog}: {e}")
 
-    # Sync slash commands
-    await self.tree.sync()
-    print("✅ Synced slash commands")
+        # Sync slash commands
+        await self.tree.sync()
+        print("✅ Synced slash commands")
 
     async def init_database(self):
         """Initialize database tables"""
@@ -191,38 +191,38 @@ class TradingBot(commands.Bot):
                 )
             """)
 
-        # Personal loans table
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS personal_loans (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                principal DECIMAL(15, 2) NOT NULL,
-                interest_amount DECIMAL(15, 2) NOT NULL,
-                total_amount DECIMAL(15, 2) NOT NULL,
-                late_fees DECIMAL(15, 2) DEFAULT 0,
-                due_date TIMESTAMP NOT NULL,
-                taken_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                repaid BOOLEAN DEFAULT FALSE,
-                repaid_at TIMESTAMP
-            )
-        """)
-        
-        # Company loans table
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS company_loans (
-                id SERIAL PRIMARY KEY,
-                company_id INTEGER NOT NULL,
-                principal DECIMAL(15, 2) NOT NULL,
-                interest_amount DECIMAL(15, 2) NOT NULL,
-                total_amount DECIMAL(15, 2) NOT NULL,
-                late_fees DECIMAL(15, 2) DEFAULT 0,
-                due_date TIMESTAMP NOT NULL,
-                taken_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                repaid BOOLEAN DEFAULT FALSE,
-                repaid_at TIMESTAMP,
-                FOREIGN KEY (company_id) REFERENCES companies(id)
-            )
-        """)
+            # Personal loans table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS personal_loans (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    principal DECIMAL(15, 2) NOT NULL,
+                    interest_amount DECIMAL(15, 2) NOT NULL,
+                    total_amount DECIMAL(15, 2) NOT NULL,
+                    late_fees DECIMAL(15, 2) DEFAULT 0,
+                    due_date TIMESTAMP NOT NULL,
+                    taken_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    repaid BOOLEAN DEFAULT FALSE,
+                    repaid_at TIMESTAMP
+                )
+            """)
+            
+            # Company loans table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS company_loans (
+                    id SERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    principal DECIMAL(15, 2) NOT NULL,
+                    interest_amount DECIMAL(15, 2) NOT NULL,
+                    total_amount DECIMAL(15, 2) NOT NULL,
+                    late_fees DECIMAL(15, 2) DEFAULT 0,
+                    due_date TIMESTAMP NOT NULL,
+                    taken_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    repaid BOOLEAN DEFAULT FALSE,
+                    repaid_at TIMESTAMP,
+                    FOREIGN KEY (company_id) REFERENCES companies(id)
+                )
+            """)
             
             print("✅ Database tables initialized")
 
