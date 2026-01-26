@@ -719,6 +719,37 @@ class LoanSystem(commands.Cog):
         embed.add_field(name="Amount Forgiven", value=f"${amount:,.2f}", inline=True)
         
         await ctx.send(embed=embed)
+    
+    @commands.hybrid_command(name="check_overdue")
+    @commands.check_any(commands.has_permissions(administrator=True), commands.is_owner())
+    async def manual_check_overdue(self, ctx):
+        """Manually check and apply late fees to overdue loans (Admin/Owner only)"""
+        await ctx.send("⏳ Checking for overdue loans...")
+        
+        # Manually trigger the task
+        await self.check_overdue_loans()
+        
+        async with self.bot.db.acquire() as conn:
+            # Count overdue loans
+            overdue_personal = await conn.fetchval(
+                "SELECT COUNT(*) FROM personal_loans WHERE repaid = FALSE AND due_date < $1",
+                datetime.now()
+            )
+            
+            overdue_company = await conn.fetchval(
+                "SELECT COUNT(*) FROM company_loans WHERE repaid = FALSE AND due_date < $1",
+                datetime.now()
+            )
+        
+        embed = discord.Embed(
+            title="✅ Overdue Loan Check Complete",
+            description="Late fees have been applied to all overdue loans",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Overdue Personal Loans", value=str(overdue_personal), inline=True)
+        embed.add_field(name="Overdue Company Loans", value=str(overdue_company), inline=True)
+        
+        await ctx.send(embed=embed)
 
 
 async def setup(bot):
