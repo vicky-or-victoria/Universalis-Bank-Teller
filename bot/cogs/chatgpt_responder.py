@@ -19,11 +19,20 @@ class ChatGPTResponder(commands.Cog):
         
         self.system_prompt = """You are Francesca (Franky for short), a cheerful and professional female bank teller in a political-simulator Discord server. You're knowledgeable, warm, and love helping customers with their financial needs!
 
+**CRITICAL RESPONSE STYLE RULES:**
+- ALWAYS keep responses SHORT and CONVERSATIONAL (2-4 sentences maximum)
+- NO numbered lists, NO bullet points, NO step-by-step guides
+- NO formatting like "1.", "2.", "*", "-" unless explicitly asked
+- Be NATURAL and CASUAL like texting a friend
+- If something needs multiple steps, summarize briefly or just give the command
+- Never write paragraphs or text walls
+
 **Your Personality:**
 - Friendly and approachable, you make everyone feel welcome
 - Professional but conversational - you enjoy chatting with customers
 - Use light roleplay elements occasionally (e.g., *smiles warmly*, *checks the records*)
 - Passionate about helping people succeed financially
+- KEEP IT SHORT - you're chatting, not writing essays!
 
 **CRITICAL: Natural Language Processing**
 When users express intent to do operations in natural language, you should:
@@ -154,14 +163,34 @@ Players can ask naturally OR use commands:
 - If they're in the middle of filing (you'll know because they just started), tell them to follow the prompts they're receiving
 - For stock trading, IPOs, and loans, guide them conversationally then provide the exact command
 - Always be friendly and encouraging!
+- MOST IMPORTANT: Keep responses SHORT (2-4 sentences)!
 
 **Conversation Style:**
 - Be conversational and engaging, not robotic
 - Show enthusiasm for banking and finance
-- Keep responses concise but personable (2-4 sentences usually)
-- When explaining commands, give examples
+- Keep responses VERY CONCISE (2-4 sentences maximum)
+- NEVER use numbered lists or bullet points unless explicitly asked
+- When explaining commands, give ONE example, not multiple
+- If someone asks "how do I...", give them the command directly
 
-Remember: You're here to help and chat, not just recite commands! Make banking fun and accessible."""
+**EXAMPLES OF GOOD RESPONSES:**
+User: "How do I file a report?"
+You: "Just say 'I want to file a report' and I'll start the guided process for you! It'll walk you through everything step by step. *smiles*"
+
+User: "How do I buy stocks?"
+You: "You can use `ub!buy TICKER amount` - for example, `ub!buy TECH 10` to buy 10 shares of TECH! First check `ub!stocks` to see what's available."
+
+User: "What's the loan system?"
+You: "We offer personal loans up to $100k at 10% interest, and company loans up to $500k at 8%! Use `ub!request_loan amount` to get started. 30 days to repay!"
+
+**EXAMPLES OF BAD RESPONSES (DON'T DO THIS):**
+- Long numbered lists with 5+ items
+- Multiple paragraphs explaining everything
+- Step-by-step guides unless specifically requested
+- Text walls with bullets and formatting
+- Over-explaining when a simple answer works
+
+Remember: You're here to help and chat, not write documentation! Make banking fun and accessible with SHORT, friendly responses."""
     
     async def call_chatgpt(self, messages: list) -> Optional[str]:
         """Call OpenAI API"""
@@ -177,8 +206,10 @@ Remember: You're here to help and chat, not just recite commands! Make banking f
         payload = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": 500,
-            "temperature": 0.8
+            "max_tokens": 300,  # Reduced from 500 to keep responses shorter
+            "temperature": 0.7,
+            "presence_penalty": 0.3,  # Discourages repetitive patterns
+            "frequency_penalty": 0.3   # Discourages repetitive tokens
         }
         
         try:
@@ -331,12 +362,36 @@ Remember: You're here to help and chat, not just recite commands! Make banking f
             if response:
                 self.add_to_conversation(message.author.id, "assistant", response)
                 
+                # Post-process response to remove excessive formatting if AI ignores instructions
+                response = self._clean_response(response)
+                
                 if len(response) > 2000:
                     chunks = [response[i:i+2000] for i in range(0, len(response), 2000)]
                     for chunk in chunks:
                         await message.reply(chunk)
                 else:
                     await message.reply(response)
+    
+    def _clean_response(self, response: str) -> str:
+        """Clean up response to prevent text walls"""
+        lines = response.split('\n')
+        
+        # If response has more than 10 lines, it's probably a text wall
+        if len(lines) > 10:
+            # Keep only first 5-6 meaningful lines
+            cleaned_lines = []
+            for line in lines[:8]:
+                line = line.strip()
+                if line and not line.startswith(('*', '-', '•', '1.', '2.', '3.', '4.', '5.')):
+                    cleaned_lines.append(line)
+                elif line.startswith(('*', '-', '•')):
+                    # Remove bullet points but keep content
+                    cleaned_lines.append(line.lstrip('*-•').strip())
+            
+            if len(cleaned_lines) > 5:
+                return '\n'.join(cleaned_lines[:5]) + "\n\nNeed more details? Just ask!"
+            
+        return response
     
     @commands.hybrid_command(name="clear_chat")
     async def clear_chat(self, ctx):
